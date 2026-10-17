@@ -42,22 +42,24 @@ _UA = "VILKA-OSINT/0.1 (+https://localhost; investigative tool)"
 # ---------------------------------------------------------------------------
 
 def _proxy_pool() -> list[str]:
-    """Читает и кэширует пул прокси из окружения (задаётся через запятую)."""
+    """Читает пул прокси из окружения (задаётся через запятую).
+
+    Читается при каждом вызове, а не один раз при импорте — чтобы смена
+    VILKA_PROXIES не требовала перезапуска процесса (например, в --reload).
+    """
     raw = os.getenv("VILKA_PROXIES", "").strip()
     if not raw:
         return []
     return [p.strip() for p in raw.split(",") if p.strip()]
 
 
-_PROXY_POOL: list[str] = _proxy_pool()
-
-
 def _pick_proxy(rng: Optional[random.Random] = None) -> Optional[str]:
     """Случайный прокси из пула; пустой пул = прямой выход (None)."""
-    if not _PROXY_POOL:
+    pool = _proxy_pool()
+    if not pool:
         return None
     pick = rng or random
-    return pick.choice(_PROXY_POOL)
+    return pick.choice(pool)
 
 
 def _new_client() -> httpx.AsyncClient:
