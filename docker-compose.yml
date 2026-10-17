@@ -1,0 +1,33 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: vilka-backend
+    ports:
+      - "8000:8000"
+    environment:
+      VILKA_CORS_ORIGINS: ${VILKA_CORS_ORIGINS:-http://localhost:5173}
+      VILKA_PROXIES: ${VILKA_PROXIES:-}
+      VILKA_TG_API_URL: ${VILKA_TG_API_URL:-}
+      VILKA_TG_API_KEY: ${VILKA_TG_API_KEY:-}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_SESSION_NAME: /app/sessions/vilka
+      VILKA_SPIDER_DELAY: ${VILKA_SPIDER_DELAY:-1.5}
+      VILKA_SPIDER_MAX_NODES: ${VILKA_SPIDER_MAX_NODES:-50}
+    volumes:
+      - ./data/breaches:/app/data/breaches
+      - ./sessions:/app/sessions
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: vilka-web
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped

@@ -6,3 +6,5 @@ venv/
 .env.local
 *.env.*
 backend/data/breaches/*.db
+node_modules/
+node_modules/
