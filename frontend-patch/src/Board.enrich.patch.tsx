@@ -162,3 +162,93 @@ const { enrich, runEnrich } = useEnrichment(setGraph, (graph) => {
 */
 
 export { useEnrichment };
+
+// ===========================================================================
+// ЭТАП 3 — [PATCH-6]: Spider и поиск пути
+// (добавлять в тот же Board.tsx, что и PATCH-1..5)
+// ===========================================================================
+
+// --- [PATCH-6a] доп. импорты (расширить строку импорта из './api') ---------
+// import { enrichNode, spiderRun, findPath } from './api';
+// import type { SpiderEvent, PathResult } from './api';
+
+// --- [PATCH-6b] состояние ---------------------------------------------------
+// const [spideringId, setSpideringId] = useState<string | null>(null);
+// const [pathSel, setPathSel] = useState<string[]>([]);   // id выбранных нод
+// const [pathIds, setPathIds] = useState<{ nodes: Set<string>; links: Set<string> }>({ nodes: new Set(), links: new Set() });
+
+// --- [PATCH-6c] обработчики (рядом с runEnrich) ----------------------------
+
+async function runSpider(node: FactNode) {
+  if (spideringId) return;                      // одна раскрутка за раз
+  setSpideringId(node.id);
+  const freshNodes: Map<string, FactNode> = new Map();
+  const freshLinks: Map<string, FactLink> = new Map();
+  try {
+    await spiderRun(
+      { nodes: c.nodes, links: c.links },
+      node.id,
+      2,                                          // depth по ТЗ
+      (ev) => {
+        if (ev.status === 'found' && ev.node) freshNodes.set(ev.node.id, ev.node);
+        if (ev.status === 'found' && ev.link) freshLinks.set(ev.link.id, ev.link);
+        // каждое событие — инкрементально на доску (анимация как у enrich):
+        if (freshNodes.size || freshLinks.size) {
+          setGraph((g) => ({
+            ...g,
+            nodes: applyLayout([...g.nodes, ...[...freshNodes.values()].filter((n) => !g.nodes.some((m) => m.id === n.id))], g),
+            links: [...g.links, ...[...freshLinks.values()].filter((l) => !g.links.some((m) => m.id === l.id))],
+          }));
+          freshNodes.clear();
+          freshLinks.clear();
+        }
+      },
+    );
+    onSaved?.({ nodes: c.nodes, links: c.links }); // [PATCH-5] persistence в IndexedDB
+  } catch (e) {
+    console.error('spider failed', e);
+  } finally {
+    setSpideringId(null);
+  }
+}
+
+async function runPathSearch() {
+  if (pathSel.length !== 2) return;
+  try {
+    const res: PathResult = await findPath({ nodes: c.nodes, links: c.links }, pathSel[0], pathSel[1]);
+    if (!res.found) { alert('Путь не найден'); setPathIds({ nodes: new Set(), links: new Set() }); return; }
+    setPathIds({
+      nodes: new Set(res.path_nodes.map((n) => n.id)),
+      links: new Set(res.path_links.map((l) => l.id)),
+    });
+  } catch (e) {
+    console.error('path failed', e);
+  } finally {
+    setPathSel([]);
+  }
+}
+
+// --- [PATCH-6d] контекстное меню ноды: добавить две кнопки рядом с «🔍 Обогатить» --
+// <button onClick={() => void runSpider(node)} disabled={!!spideringId}>
+//   {spideringId === node.id ? '🕷 Раскручиваю…' : '🕷 Раскрутить (Spider)'}
+// </button>
+// <button onClick={() => setPathSel((s) => s.includes(node.id) ? s.filter((x) => x !== node.id) : [...s, node.id].slice(-2))}>
+//   🔗 Выбрать для пути ({pathSel.includes(node.id) ? '✓' : `${pathSel.length}/2`})
+// </button>
+// Когда выбрано ровно 2 — показать плавающую кнопку:
+// {pathSel.length === 2 && <button className="vilka-path-go" onClick={() => void runPathSearch()}>🔗 Найти путь</button>}
+
+// --- [PATCH-6e] отрисовка связей: подсветка пути красным --------------------
+// В рендере каждой нити (SVG line/path):
+//   const onPath = pathIds.links.has(link.id);
+//   stroke={onPath ? '#ff2d55' : '#8884f2'}
+//   strokeWidth={onPath ? 3 : 1.5}
+//   style={{ transition: 'stroke .3s, filter .3s', filter: onPath ? 'drop-shadow(0 0 6px #ff2d55)' : undefined }}
+// И ноды на пути чуть увеличиваем/подсвечиваем рамкой:
+//   className={`vilka-node ${pathIds.nodes.has(node.id) ? 'vilka-node--path' : ''}`}
+
+// --- [PATCH-6f] CSS (добавить в index.css / стили доски) --------------------
+/*
+.vilka-node--path { outline: 2px solid #ff2d55; outline-offset: 2px; box-shadow: 0 0 14px rgba(255,45,85,.7); }
+.vilka-path-go { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 50; }
+*/

@@ -6,3 +6,7 @@ pydantic>=2.7.0
 httpx[socks]>=0.27.0
 # WebSocket для /ws/enrich (uvicorn[standard] тянет его сам, фиксируем явно):
 websockets>=12.0
+
+# ЭТАП 3:
+networkx>=3.1
+telethon>=1.36

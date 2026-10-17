@@ -6,7 +6,10 @@
  * а локальное объявление удали (см. комментарий в Board.tsx).
  */
 
-import type { FactNode } from './types';
+import type { FactNode, NodeKind } from './types';
+// FactLink — локальный экспорт этого модуля (см. interface FactLink ниже);
+// в проекте можно переимпортировать из types.ts, если он там объявлен.
+
 
 // ---------------------------------------------------------------------------
 // Типы, зеркалящие backend/models.py
@@ -160,4 +163,97 @@ export function enrichNodeStream(
       if (!settled) reject(new EnrichError(-1, 'websocket closed before done'));
     };
   });
+}
+
+// ===========================================================================
+// ЭТАП 3: Spider (рекурсивная раскрутка) + поиск пути (networkx на бэке)
+// ===========================================================================
+
+export interface SpiderEvent {
+  status:
+    | 'spider_started' | 'enriching' | 'found' | 'skipped'
+    | 'spider_done' | 'spider_stopped' | 'error';
+  run_id?: string;
+  node?: FactNode;
+  link?: FactLink;
+  node_id?: string;
+  kind?: NodeKind;
+  value?: string;
+  depth?: number;
+  reason?: string;
+  detail?: string;
+  expanded?: number;
+  new_nodes?: number;
+  skipped?: number;
+}
+
+export interface PathResult {
+  found: boolean;
+  hops: number;
+  path_nodes: Array<{ id: string; kind: NodeKind; value: string }>;
+  path_links: Array<{ id: string; from: string; to: string; kind: string }>;
+}
+
+/** Рекурсивная раскрутка графа через WebSocket — стрим событий в реальном
+ *  времени. Бэкенд сам следит за циклами (dedup по kind+value) и rate-limit. */
+export async function spiderRun(
+  graph: { nodes: FactNode[]; links: FactLink[] },
+  startNodeId: string,
+  depth: number,
+  onEvent: (ev: SpiderEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(`${WS_BASE}/ws/enrich`);
+    const finish = (fn: () => void) => { try { ws.close(); } catch { /* noop */ } fn(); };
+    signal?.addEventListener('abort', () => finish(() => reject(new Error('aborted'))));
+    ws.onopen = () =>
+      ws.send(JSON.stringify({ action: 'spider', start_node_id: startNodeId, depth, graph }));
+    ws.onmessage = (e) => {
+      const ev = JSON.parse(e.data as string) as SpiderEvent;
+      onEvent(ev);
+      if (ev.status === 'spider_done' || ev.status === 'spider_stopped') finish(resolve);
+      else if (ev.status === 'error') finish(() => reject(new Error(ev.detail ?? 'spider error')));
+    };
+    ws.onerror = () => finish(() => reject(new Error('websocket error')));
+  });
+}
+
+/** HTTP-вариант спайдера: fire-and-forget джоба (для батчей без сокета). */
+export async function spiderStart(
+  graph: { nodes: FactNode[]; links: FactLink[] },
+  startNodeId: string,
+  depth = 2,
+): Promise<string> {
+  const r = await fetch(`${API_BASE}/api/spider`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ start_node_id: startNodeId, depth, graph }),
+  });
+  if (!r.ok) throw new Error(`spider start failed: ${r.status}`);
+  return ((await r.json()) as { job_id: string }).job_id;
+}
+
+export async function spiderJobStatus(jobId: string): Promise<Record<string, unknown>> {
+  const r = await fetch(`${API_BASE}/api/spider/${encodeURIComponent(jobId)}`);
+  if (!r.ok) throw new Error(`spider status failed: ${r.status}`);
+  return (await r.json()) as Record<string, unknown>;
+}
+
+/** Кратчайший путь между двумя нодами: фронт шлёт снимок доски, бэк считает networkx. */
+export async function findPath(
+  graph: { nodes: FactNode[]; links: FactLink[] },
+  fromId: string,
+  toId: string,
+): Promise<PathResult> {
+  const r = await fetch(
+    `${API_BASE}/api/path?from_id=${encodeURIComponent(fromId)}&to_id=${encodeURIComponent(toId)}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(graph),
+    },
+  );
+  if (!r.ok) throw new Error(`path query failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
+  return (await r.json()) as PathResult;
 }

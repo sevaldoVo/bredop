@@ -224,6 +224,94 @@ async def _live_ip(client: httpx.AsyncClient, ip: str) -> Optional[EnrichResult]
 #   VILKA_TG_API_KEY  — необязательный Bearer-ключ.
 # Если переменные не заданы или API недоступно — фолбэк на детерминированный mock.
 
+async def _live_phone_telethon(phone: str) -> Optional[EnrichResult]:
+    """ЭТАП 3: MTProto-пробив телефона напрямую через Telethon.
+
+    Ищет аккаунт по номеру, затем парсит до 5 последних публичных
+    сообщений цели -> ноды ACCOUNT + NOTE (с ссылкой на источник).
+    Возвращает None, если канал выключен/недоступен (тогда работает
+    HTTP VILKA_TG_API_URL, а затем mock).
+    """
+    from telethon_engine import is_enabled, mtproto_lookup, mtproto_recent_messages
+
+    if not is_enabled():
+        return None
+    norm = _norm_phone(phone)
+    found = await mtproto_lookup(norm)
+    if not found:
+        return None
+
+    res = EnrichResult(engine="live")
+    tg_id = found["tg_id"]
+    username = found.get("username") or ""
+    value = f"tg:{tg_id}"
+    account = _node(
+        NodeKind.ACCOUNT, value,
+        label=f"@{username.lstrip('@')}" if username else value,
+        conf=3, sources=["live:telethon-mtproto"],
+        meta={"platform": "telegram", "tg_id": tg_id, "username": username,
+              "name": found.get("name")},
+    )
+    res.nodes.append(account)
+    res.links.append(
+        _link(account.id, "__SOURCE__", LinkKind.BELONGS_TO, weight=0.95,
+              note="MTProto: номер привязан к аккаунту")
+    )
+    # Последние сообщения -> NOTE-ноды с источниками
+    for msg in await mtproto_recent_messages(tg_id):
+        note = _node(
+            NodeKind.NOTE, msg["text"],
+            label=f"msg @{username or tg_id} ({msg['chat']})",
+            conf=2, sources=[f"t.me/{msg['chat']}"],
+            meta={"tg_id": tg_id, "date": msg["date"], "link": msg["link"]},
+        )
+        res.nodes.append(note)
+        res.links.append(
+            _link(account.id, note.id, LinkKind.MENTIONED_IN, weight=0.8,
+                  note=msg["link"])
+        )
+    return res
+
+
+async def _live_handle_telethon(handle: str) -> Optional[EnrichResult]:
+    """ЭТАП 3: MTProto-поиск @username; при находке — те же ACCOUNT+NOTE."""
+    from telethon_engine import is_enabled, mtproto_lookup, mtproto_recent_messages
+
+    if not is_enabled():
+        return None
+    found = await mtproto_lookup(handle)
+    if not found:
+        return None
+
+    res = EnrichResult(engine="live")
+    tg_id = found["tg_id"]
+    username = (found.get("username") or handle.lstrip("@")).lstrip("@")
+    account = _node(
+        NodeKind.ACCOUNT, f"tg:{tg_id}",
+        label=f"@{username}", conf=3, sources=["live:telethon-mtproto"],
+        meta={"platform": "telegram", "tg_id": tg_id, "username": username,
+              "name": found.get("name")},
+    )
+    res.nodes.append(account)
+    res.links.append(
+        _link(account.id, "__SOURCE__", LinkKind.BELONGS_TO, weight=0.9,
+              note="MTProto: username найден")
+    )
+    for msg in await mtproto_recent_messages(tg_id):
+        note = _node(
+            NodeKind.NOTE, msg["text"],
+            label=f"msg @{username} ({msg['chat']})",
+            conf=2, sources=[f"t.me/{msg['chat']}"],
+            meta={"tg_id": tg_id, "date": msg["date"], "link": msg["link"]},
+        )
+        res.nodes.append(note)
+        res.links.append(
+            _link(account.id, note.id, LinkKind.MENTIONED_IN, weight=0.8,
+                  note=msg["link"])
+        )
+    return res
+
+
 async def _live_phone_tg(client: httpx.AsyncClient, phone: str) -> Optional[EnrichResult]:
     """Проверяет привязку номера к Telegram через внешний TG-OSINT API."""
     api_url = os.getenv("VILKA_TG_API_URL", "").strip()
@@ -440,12 +528,37 @@ _LIVE_DISPATCH: dict[NodeKind, list[LiveFn]] = {
 }
 
 
-async def enrich(kind: NodeKind, value: str) -> EnrichResult:
-    """Пробивает значение: сначала live-источники (если есть), иначе mock.
+# Telethon-обёртки не берут httpx-клиент; диспетчер различает их по сигнатуре.
+MtLiveFn = Callable[[str], Awaitable[Optional[EnrichResult]]]
 
-    Каждый live-вызов идёт через СЛУЧАЙНЫЙ прокси из пула VILKA_PROXIES
-    (см. _new_client) — ротация на каждый запрос для OPSEC / anti-429.
+_MTPROTO_DISPATCH: dict[NodeKind, MtLiveFn] = {
+    NodeKind.PHONE: _live_phone_telethon,
+    NodeKind.HANDLE: _live_handle_telethon,
+}
+
+
+async def enrich(kind: NodeKind, value: str) -> EnrichResult:
+    """Пробивает значение: MTProto -> live HTTP -> mock.
+
+    Порядок каскада (ЭТАП 3):
+      1. Telethon/MTProto (для phone/handle, если VILKA_TELETHON_ENABLED=1);
+      2. HTTP live-источники — каждый через СЛУЧАЙНЫЙ прокси из пула
+         VILKA_PROXIES (см. _new_client) — ротация на запрос, anti-429/OPSEC;
+      3. Детерминированный mock-фолбэк.
     """
+    mt_fn = _MTPROTO_DISPATCH.get(kind)
+    if mt_fn is not None:
+        try:
+            result = await mt_fn(value)
+        except Exception:  # noqa: BLE001 — enrichment best-effort
+            result = None
+        if result is not None:
+            linked = ({lk.from_, lk.to_} for lk in result.links)
+            for n in result.nodes:
+                if not any(n.id in pair for pair in linked):
+                    result.links.append(_link("__SOURCE__", n.id, LinkKind.RELATED_TO, weight=0.5))
+            return result
+
     lives = _LIVE_DISPATCH.get(kind, [])
     for live in lives:
         async with _new_client() as client:
