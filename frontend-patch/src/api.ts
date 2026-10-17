@@ -26,8 +26,8 @@ export type LinkKind =
 
 export interface FactLink {
   id: string;
-  source: string; // id исходной ноды
-  target: string; // id целевой ноды
+  from: string; // id исходной ноды (ЭТАП 2: бэкенд отдаёт from/to, как в types.ts)
+  to: string;   // id целевой ноды
   kind: LinkKind;
   weight: number; // 0..1
   note?: string | null;
@@ -40,6 +40,15 @@ export interface EnrichResponse {
   engine: 'mock' | 'live';
   took_ms: number;
 }
+
+/** Сообщения стрима WebSocket /ws/enrich (ЭТАП 2). */
+export type WsEnrichEvent =
+  | { status: 'started'; node_id: string }
+  | { status: 'found'; node: FactNode }
+  | { status: 'found'; link: FactLink }
+  | { status: 'done'; engine: 'mock' | 'live'; took_ms: number; count: number }
+  | { status: 'error'; detail: string }
+  | { status: 'pong' };
 
 class EnrichError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -101,3 +110,54 @@ export async function enrichNode(node: FactNode): Promise<EnrichResponse> {
 }
 
 export { EnrichError };
+
+// ---------------------------------------------------------------------------
+// WebSocket /ws/enrich — стримовый пробив (ЭТАП 2, задел под батчи)
+// ---------------------------------------------------------------------------
+
+const WS_BASE: string = (() => {
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+  const http = env?.VITE_VILKA_API?.replace(/\/$/, '') ?? 'http://localhost:8000';
+  return http.replace(/^http/, 'ws'); // http->ws, https->wss
+})();
+
+/**
+ * Стримовый обогащение одной ноды. Коллбэк получает каждое сообщение сервера
+ * (started -> found* -> done). Промис резолвится на 'done', реджектится на
+ * 'error' или закрытии сокета до завершения.
+ */
+export function enrichNodeStream(
+  node: FactNode,
+  onEvent: (ev: WsEnrichEvent) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${WS_BASE}/ws/enrich`);
+    let settled = false;
+
+    ws.onopen = () => ws.send(JSON.stringify({ action: 'enrich', node }));
+    ws.onmessage = (ev: MessageEvent<string>) => {
+      let msg: WsEnrichEvent;
+      try {
+        msg = JSON.parse(ev.data) as WsEnrichEvent;
+      } catch {
+        return;
+      }
+      onEvent(msg);
+      if (msg.status === 'done') {
+        settled = true;
+        ws.close();
+        resolve();
+      } else if (msg.status === 'error') {
+        settled = true;
+        ws.close();
+        reject(new EnrichError(-1, msg.detail));
+      }
+    };
+    ws.onerror = () => {
+      if (!settled) reject(new EnrichError(-1, 'websocket error'));
+    };
+    ws.onclose = () => {
+      if (!settled) reject(new EnrichError(-1, 'websocket closed before done'));
+    };
+  });
+}

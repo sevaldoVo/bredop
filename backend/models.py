@@ -80,13 +80,19 @@ class FactNode(BaseModel):
 
 
 class FactLink(BaseModel):
-    """Ребро графа. Совместимо с ``FactLink`` из types.ts."""
+    """Ребро графа. Совместимо с ``FactLink`` из types.ts.
 
-    model_config = ConfigDict(extra="forbid")
+    ЭТАП 2: поля переименованы в ``from_`` / ``to_`` (зарезервированные
+    слова Python), но в JSON сериализуются как ``from`` / ``to`` — ровно
+    как ожидает фронтенд (alias_generator не используем точечно, чтобы
+    не сломать camelCase-поле ``createdAt``).
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     id: str = Field(default_factory=lambda: _new_id("l"))
-    source: str = Field(..., description="id исходной ноды")
-    target: str = Field(..., description="id целевой ноды")
+    from_: str = Field(..., alias="from", description="id исходной ноды")
+    to_: str = Field(..., alias="to", description="id целевой ноды")
     kind: LinkKind = LinkKind.RELATED_TO
     weight: float = Field(default=0.5, ge=0.0, le=1.0)
     note: Optional[str] = None
@@ -122,3 +128,12 @@ class EnrichResponse(BaseModel):
     links: list[FactLink] = Field(default_factory=list)
     engine: str = Field(default="mock", description="mock | live")
     took_ms: int = 0
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        # Фронтенд ждёт from/to — всегда сериализуем по alias.
+        kwargs.setdefault("by_alias", True)
+        return super().model_dump(**kwargs)
+
+    def model_dump_json(self, **kwargs: Any) -> str:
+        kwargs.setdefault("by_alias", True)
+        return super().model_dump_json(**kwargs)

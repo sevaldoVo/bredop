@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -34,6 +35,47 @@ from models import EnrichResponse, FactLink, FactNode, LinkKind, NodeKind
 
 _HTTP_TIMEOUT = httpx.Timeout(8.0, connect=4.0)
 _UA = "VILKA-OSINT/0.1 (+https://localhost; investigative tool)"
+
+
+# ---------------------------------------------------------------------------
+# OPSEC: пул прокси (VILKA_PROXIES="socks5://h:p,http://user:pass@h:p,...")
+# ---------------------------------------------------------------------------
+
+def _proxy_pool() -> list[str]:
+    """Читает и кэширует пул прокси из окружения (задаётся через запятую)."""
+    raw = os.getenv("VILKA_PROXIES", "").strip()
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+_PROXY_POOL: list[str] = _proxy_pool()
+
+
+def _pick_proxy(rng: Optional[random.Random] = None) -> Optional[str]:
+    """Случайный прокси из пула; пустой пул = прямой выход (None)."""
+    if not _PROXY_POOL:
+        return None
+    pick = rng or random
+    return pick.choice(_PROXY_POOL)
+
+
+def _new_client() -> httpx.AsyncClient:
+    """AsyncClient с одним случайным прокси из пула на каждый запрос-сесссию.
+
+    Ротация на уровне клиента => каждый live-вызов (ip-api, crt.sh, DoH, TG)
+    уходит с нового исходящего IP — меньше 429 и не палим IP сервера.
+    Для SOCKS5 нужен пакет ``httpx[socks]`` (добавлен в requirements.txt).
+    """
+    proxy = _pick_proxy()
+    kwargs: dict = {"timeout": _HTTP_TIMEOUT, "headers": {"user-agent": _UA}}
+    if proxy:
+        # httpx >= 0.26 использует keyword `proxy`; старые версии — `proxies`.
+        try:
+            return httpx.AsyncClient(proxy=proxy, **kwargs)
+        except TypeError:  # pragma: no cover — fallback для httpx < 0.26
+            return httpx.AsyncClient(proxies=proxy, **kwargs)
+    return httpx.AsyncClient(**kwargs)
 
 
 def _seeded_rng(value: str) -> random.Random:
@@ -71,14 +113,15 @@ def _node(
 
 
 def _link(
-    source_id: str,
-    target_id: str,
+    from_id: str,
+    to_id: str,
     kind: LinkKind,
     *,
     weight: float = 0.5,
     note: Optional[str] = None,
 ) -> FactLink:
-    return FactLink(source=source_id, target=target_id, kind=kind, weight=weight, note=note)
+    # JSON-алиасы: from_ -> "from", to_ -> "to" (см. models.FactLink)
+    return FactLink(from_=from_id, to_=to_id, kind=kind, weight=weight, note=note)
 
 
 @dataclass
@@ -165,6 +208,65 @@ async def _live_ip(client: httpx.AsyncClient, ip: str) -> Optional[EnrichResult]
         return res
     except (httpx.HTTPError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# LIVE: телефон -> Telegram (MTProto-вектор через внешний TG-OSINT API)
+# ---------------------------------------------------------------------------
+
+# Настройка через окружение:
+#   VILKA_TG_API_URL  — эндпоинт, принимающий JSON {"phone": "+7..."} и
+#                       отвечающий {"found": bool, "tg_id": str, "username": str}
+#                       (например, локальный бот-прослущик «Глаз Бога» / Eye of God
+#                        self-hosted инстанс или telegram-phone-checker).
+#   VILKA_TG_API_KEY  — необязательный Bearer-ключ.
+# Если переменные не заданы или API недоступно — фолбэк на детерминированный mock.
+
+async def _live_phone_tg(client: httpx.AsyncClient, phone: str) -> Optional[EnrichResult]:
+    """Проверяет привязку номера к Telegram через внешний TG-OSINT API."""
+    api_url = os.getenv("VILKA_TG_API_URL", "").strip()
+    if not api_url:
+        return None  # live-канал не настроен -> enrichment пойдёт через mock
+
+    norm = _norm_phone(phone)
+    headers = {"content-type": "application/json"}
+    api_key = os.getenv("VILKA_TG_API_KEY", "").strip()
+    if api_key:
+        headers["authorization"] = f"Bearer {api_key}"
+
+    try:
+        r = await client.post(api_url, json={"phone": norm}, headers=headers)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    if not data.get("found"):
+        return None
+
+    tg_id = str(data.get("tg_id") or "").strip()
+    username = str(data.get("username") or "").strip()
+    if not tg_id and not username:
+        return None
+
+    res = EnrichResult(engine="live")
+    value = f"tg:{tg_id}" if tg_id else f"tg:@{username.lstrip('@')}"
+    account = _node(
+        NodeKind.ACCOUNT,
+        value,
+        label=f"@{username.lstrip('@')}" if username else value,
+        conf=3,
+        sources=["live:tg-phone-checker"],
+        meta={"platform": "telegram", "tg_id": tg_id, "username": username},
+    )
+    res.nodes.append(account)
+    # ACCOUNT belongs_to исходный PHONE (направление: аккаунт -> телефон).
+    res.links.append(
+        _link(account.id, "__SOURCE__", LinkKind.BELONGS_TO, weight=0.9,
+              note="номер привязан к аккаунту Telegram")
+    )
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -328,25 +430,35 @@ _MOCK_DISPATCH: dict[NodeKind, MockFn] = {
     NodeKind.HANDLE: _mock_handle,
 }
 
-_LIVE_DISPATCH: dict[NodeKind, LiveFn] = {
-    NodeKind.DOMAIN: _live_domain,
-    NodeKind.IP: _live_ip,
+# Телефон: сначала пробуем live-TG (если VILKA_TG_API_URL задан), при неудаче — mock.
+_LIVE_DISPATCH: dict[NodeKind, list[LiveFn]] = {
+    NodeKind.DOMAIN: [_live_domain],
+    NodeKind.IP: [_live_ip],
+    NodeKind.PHONE: [_live_phone_tg],
 }
 
 
 async def enrich(kind: NodeKind, value: str) -> EnrichResult:
-    """Пробивает значение: сначала live-источник (если есть), иначе mock."""
-    live = _LIVE_DISPATCH.get(kind)
-    if live is not None:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, headers={"user-agent": _UA}) as client:
+    """Пробивает значение: сначала live-источники (если есть), иначе mock.
+
+    Каждый live-вызов идёт через СЛУЧАЙНЫЙ прокси из пула VILKA_PROXIES
+    (см. _new_client) — ротация на каждый запрос для OPSEC / anti-429.
+    """
+    lives = _LIVE_DISPATCH.get(kind, [])
+    for live in lives:
+        async with _new_client() as client:
             try:
                 result = await live(client, value)
             except Exception:  # noqa: BLE001 — enrichment best-effort
                 result = None
         if result is not None:
-            # Развесим связи live-нод к источнику
+            # Добавляем НЕДОСТАЮЩИЕ generic-связи live-нод к источнику
+            # (enricher сам решает направление/тип; здесь — страховка, чтобы
+            #  ни одна найденная нода не осталась «островом» на доске).
+            linked = ({lk.from_, lk.to_} for lk in result.links)
             for n in result.nodes:
-                result.links.append(_link("__SOURCE__", n.id, LinkKind.RELATED_TO, weight=0.5))
+                if not any(n.id in pair for pair in linked):
+                    result.links.append(_link("__SOURCE__", n.id, LinkKind.RELATED_TO, weight=0.5))
             return result
 
     mock_fn = _MOCK_DISPATCH.get(kind, _mock_generic)

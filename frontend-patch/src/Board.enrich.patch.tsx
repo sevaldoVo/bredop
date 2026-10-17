@@ -1,5 +1,5 @@
 /**
- * Board.tsx — патч интеграции с OSINT-бэкендом (ВИЛКА, ЭТАП 1).
+ * Board.tsx — патч интеграции с OSINT-бэкендом (ВИЛКА, ЭТАП 1 + ЭТАП 2).
  *
  * ВАЖНО: это референсная реализация под вашу текущую Board.tsx.
  * Структура (`c.nodes`, `c.links`, стейт через useReducer/useState) сохранена
@@ -9,12 +9,17 @@
  *   [PATCH-2] хук useEnrichment — внутрь компонента Board
  *   [PATCH-3] onDoubleClick + кнопка «Обогатить» — на ноду
  *   [PATCH-4] CSS-анимация появления — в ваш *.module.css / index.css
+ *   [PATCH-5] (ЭТАП 2) сохранение кейса в IndexedDB после обогащения
+ *
+ * ЭТАП 2: FactLink использует поля `from`/`to` (как в types.ts и models.py).
  */
 
 // ─── [PATCH-1] импорты ──────────────────────────────────────────────────────
 import { useCallback, useRef, useState } from 'react';
 import { enrichNode, type FactLink } from './api';
 import type { FactNode } from './types';
+// [PATCH-5] модуль персистентности из вашего проекта (idb-keyval):
+import { saveCase } from './storage'; // ← путь под ваш проект
 
 /** Радиус, на котором раскладываются новые ноды вокруг исходной. */
 const ENRICH_RADIUS = 220;
@@ -29,8 +34,14 @@ interface EnrichState {
 // Допущение: у вас есть сеттер состояния графа вида
 //   setGraph((g) => ({ ...g, nodes: [...], links: [...] }))
 // Замените `setGraph` на свой способ мутации `c.nodes` / `c.links`.
+//
+// ЭТАП 2: добавлен коллбэк onSaved — вызывается ПОСЛЕ применения новых нод,
+// с актуальным графом, чтобы Board мог сохранить кейс в IndexedDB.
 
-function useEnrichment(setGraph: React.Dispatch<React.SetStateAction<{ nodes: FactNode[]; links: FactLink[] }>>) {
+function useEnrichment(
+  setGraph: React.Dispatch<React.SetStateAction<{ nodes: FactNode[]; links: FactLink[] }>>,
+  onSaved?: (graph: { nodes: FactNode[]; links: FactLink[] }) => void,
+) {
   const [enrich, setEnrich] = useState<EnrichState>({ pendingId: null, error: null });
   // Ссылка на актуальные ноды, чтобы не тащить весь граф в deps.
   const nodesRef = useRef<FactNode[]>([]);
@@ -54,6 +65,7 @@ function useEnrichment(setGraph: React.Dispatch<React.SetStateAction<{ nodes: Fa
           };
         });
 
+        let nextGraph: { nodes: FactNode[]; links: FactLink[] } | null = null;
         setGraph((g) => {
           // Идемпотентность: не добавляем ноду, которая уже есть на доске
           // (сверяем по kind+value, т.к. id у mock'а случайный).
@@ -62,22 +74,41 @@ function useEnrichment(setGraph: React.Dispatch<React.SetStateAction<{ nodes: Fa
           const addedIds = new Set(addNodes.map((n) => n.id));
           // Оставляем только связи, оба конца которых теперь живут на доске.
           const aliveIds = new Set([...g.nodes.map((n) => n.id), ...addedIds]);
+          // ЭТАП 2: у FactLink поля from/to (не source/target).
           const addLinks = freshLinks.filter(
-            (l) => (addedIds.has(l.source) || l.source === src.id) && aliveIds.has(l.target) && aliveIds.has(l.source),
+            (l) => (addedIds.has(l.from) || l.from === src.id) && aliveIds.has(l.to) && aliveIds.has(l.from),
           );
-          return { nodes: [...g.nodes, ...addNodes], links: [...g.links, ...addLinks] };
+          nextGraph = { nodes: [...g.nodes, ...addNodes], links: [...g.links, ...addLinks] };
+          return nextGraph;
         });
+
+        // [PATCH-5] Персистентность: сохраняем обновлённый кейс в IndexedDB,
+        // иначе пробив исчезнет при перезагрузке страницы.
+        // `currentCaseId` — id активного кейса из вашего Board-стейта;
+        // сигнатура saveCase(caseId, graph) повторяет ваш storage.ts.
+        if (nextGraph && onSaved) onSaved(nextGraph);
       } catch (e) {
         setEnrich((s) => ({ ...s, error: e instanceof Error ? e.message : 'enrich failed' }));
       } finally {
         setEnrich((s) => ({ pendingId: null, error: s.error }));
       }
     },
-    [enrich.pendingId, setGraph],
+    [enrich.pendingId, setGraph, onSaved],
   );
 
   return { enrich, runEnrich, nodesRef };
 }
+
+// ─── [PATCH-5] wiring в компоненте Board (рядом с объявлением хука) ─────────
+/*
+const caseIdRef = useRef<string>(activeCase.id); // ваш активный кейс
+
+const { enrich, runEnrich } = useEnrichment(setGraph, (graph) => {
+  // fire-and-forget: saveCase уже async внутри (idb-keyval set)
+  void saveCase(caseIdRef.current, { ...activeCase, nodes: graph.nodes, links: graph.links })
+    .catch((err) => console.warn('[vilka] saveCase failed:', err));
+});
+*/
 
 // ─── [PATCH-3] вешаем на ноду внутри JSX рендера нод ────────────────────────
 /*

@@ -1,4 +1,8 @@
+# ВИЛКА backend (ЭТАП 2)
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-httpx>=0.27.0
 pydantic>=2.7.0
+# socks-extra обязателен для SOCKS5-прокси из VILKA_PROXIES:
+httpx[socks]>=0.27.0
+# WebSocket для /ws/enrich (uvicorn[standard] тянет его сам, фиксируем явно):
+websockets>=12.0
