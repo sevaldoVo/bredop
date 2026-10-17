@@ -21,7 +21,7 @@ import time
 import uuid
 from typing import Any, Optional, Union
 
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -47,6 +47,28 @@ try:
     from telethon_engine import shutdown as tg_shutdown
 except ImportError:  # pragma: no cover — telethon не установлен
     async def tg_shutdown() -> None: ...  # type: ignore[misc]
+
+# ЭТАП 5: SaaS-слой (auth/billing/БД). Опционален: без sqlalchemy или
+# VILKA_AUTH_ENFORCED=0 бэкенд живёт как раньше (анонимный enrich).
+try:
+    from models_sql import AuditLog, User, init_db, session_scope
+    from auth import (
+        LoginRequest,
+        RegisterRequest,
+        TokenResponse,
+        MeResponse,
+        enforce_credit,
+        get_current_user,
+        login_user,
+        register_user,
+        whoami,
+    )
+    from billing import CheckoutRequest, CheckoutResponse, WebhookAck, create_checkout, handle_crypto_webhook
+    _HAS_SAAS = True
+except ImportError:  # pragma: no cover
+    _HAS_SAAS = False
+
+AUTH_ENFORCED = os.getenv("VILKA_AUTH_ENFORCED", "1" if _HAS_SAAS else "0") == "1"
 
 SOURCE_PLACEHOLDER = "__SOURCE__"
 
@@ -79,6 +101,39 @@ async def _startup_breaches() -> None:
         print(f"[vilka] breach-db init skipped: {exc}")
 
 
+@app.on_event("startup")
+async def _startup_saas_db() -> None:
+    """ЭТАП 5: создаём таблицы users/audit_logs/invoices (create_all идемпотентен).
+
+    Если VILKA_ADMIN_EMAIL задан — автоматически создаём/апгрейдим первого админа
+    с паролем из VILKA_ADMIN_PASSWORD (см. README, раздел DEPLOY).
+    """
+    if not _HAS_SAAS:
+        return
+    try:
+        await init_db()
+        admin_email = os.getenv("VILKA_ADMIN_EMAIL", "").strip().lower()
+        if admin_email:
+            from auth import hash_password
+            async for session in session_scope():
+                from sqlalchemy import select
+                u = (await session.execute(
+                    select(User).where(User.email == admin_email)
+                )).scalar_one_or_none()
+                if u is None:
+                    u = User(email=admin_email,
+                             hashed_password=hash_password(os.getenv("VILKA_ADMIN_PASSWORD", "change-me")),
+                             credits_balance=int(os.getenv("VILKA_ADMIN_CREDITS", "100000")),
+                             role="admin")
+                    session.add(u)
+                else:
+                    u.role = "admin"
+                await session.commit()
+            print(f"[vilka] admin user ready: {admin_email}")
+    except Exception as exc:  # noqa: BLE001 — БД не должна ронять API
+        print(f"[vilka] SaaS DB init skipped: {exc}")
+
+
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "vilka-backend"}
@@ -100,12 +155,62 @@ def _finalize(result, source_id: str) -> tuple[list[FactNode], list[FactLink]]:
     return result.nodes, links
 
 
+# ---------------------------------------------------------------------------
+# ЭТАП 5: SaaS-роуты (auth / billing). Роуты enrich получают Depends(enforce_credit)
+# только когда AUTH_ENFORCED=1 и sqlalchemy установлен.
+# ---------------------------------------------------------------------------
+
+if _HAS_SAAS:
+
+    @app.post("/api/register", response_model=TokenResponse)
+    async def api_register(body: RegisterRequest) -> TokenResponse:
+        return await register_user(body)
+
+    @app.post("/api/login", response_model=TokenResponse)
+    async def api_login(body: LoginRequest) -> TokenResponse:
+        return await login_user(body)
+
+    @app.get("/api/me", response_model=MeResponse)
+    async def api_me(user: User = Depends(get_current_user)) -> MeResponse:
+        return await whoami(user)
+
+    @app.post("/api/billing/checkout", response_model=CheckoutResponse)
+    async def api_checkout(body: CheckoutRequest, user: User = Depends(get_current_user)) -> CheckoutResponse:
+        return await create_checkout(user, body)
+
+    # Вебхук — ПУБЛИЧНЫЙ эндпоинт (его зовёт процессинг), защита HMAC-подписью.
+    @app.post("/api/webhook/crypto", response_model=WebhookAck)
+    async def api_webhook_crypto(request: Request) -> WebhookAck:
+        return await handle_crypto_webhook(request)
+
+
+async def _audit_enrich(user_id: Optional[int], kind: str, value: str, engine: str, n_nodes: int) -> None:
+    """Пишем аудит-лог пробива (best-effort, не роняем основной запрос)."""
+    if not _HAS_SAAS or user_id is None:
+        return
+    try:
+        async for session in session_scope():
+            session.add(AuditLog(user_id=user_id, action="enrich",
+                                 target_kind=kind, target_value=value[:256],
+                                 detail=f"engine={engine} nodes={n_nodes}"))
+            await session.commit()
+            break
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @app.post("/api/enrich", response_model=EnrichResponse)
-async def api_enrich(req: EnrichRequest) -> EnrichResponse:
+async def api_enrich(
+    req: EnrichRequest,
+    user: Optional[User] = Depends(enforce_credit) if (_HAS_SAAS and AUTH_ENFORCED) else None,
+) -> EnrichResponse:
     """Пробивает исходную ноду и возвращает новые ноды + связи.
 
     Тело: {"source_node": {"kind": "phone", "value": "+79990000000"}}
     Допускается прислать полный FactNode — бэкенд возьмёт kind/value/id.
+
+    ЭТАП 5: при VILKA_AUTH_ENFORCED=1 требует Bearer-JWT и списывает 1 кредит
+    (402 Payment Required при нулевом балансе). Каждый пробив пишется в audit_logs.
     """
     src: Union[FactNode, SourceNodeLite] = req.source_node
     source_id = _resolve_source_id(src)
@@ -118,6 +223,8 @@ async def api_enrich(req: EnrichRequest) -> EnrichResponse:
     took_ms = int((time.perf_counter() - t0) * 1000)
 
     nodes, links = _finalize(result, source_id)
+    await _audit_enrich(getattr(user, "id", None), src.kind.value, src.value,
+                        result.engine, len(nodes))
     return EnrichResponse(nodes=nodes, links=links, engine=result.engine, took_ms=took_ms)
 
 

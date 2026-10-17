@@ -15,3 +15,11 @@ telethon>=1.36
 # curl_cffi — опциональный TLS-фингерпринт Chrome для reverse-image (без него
 # enricher честно фолбэкается на mock). Локальные утечки — на встроенном sqlite3.
 curl-cffi>=0.7.0
+
+# ЭТАП 5 (SaaS: auth/billing/БД):
+sqlalchemy[asyncio]>=2.0
+aiosqlite>=0.20.0        # локальная разработка; в проде asyncpg ниже
+asyncpg>=0.29.0; python_version < "3.13"
+PyJWT>=2.8.0
+bcrypt>=4.1.0
+email-validator>=2.1.0   # для pydantic EmailStr

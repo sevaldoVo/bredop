@@ -8,3 +8,7 @@ venv/
 backend/data/breaches/*.db
 node_modules/
 node_modules/
+
+# локальная БД и тестовые данные (не коммитим)
+backend/data/
+*.db

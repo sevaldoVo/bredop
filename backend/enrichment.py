@@ -651,6 +651,92 @@ _LIVE_DISPATCH: dict[NodeKind, list[LiveFn]] = {
 _LOCAL_LIVE_KINDS = (NodeKind.EMAIL, NodeKind.PHONE)
 
 
+# ---------------------------------------------------------------------------
+# ЭТАП 5: АГРЕГАТОРЫ скрытых OSINT-ботов (Himera / Eye of God / Universal Search)
+# Самый нижний уровень фолбэка перед mock. Каждый адаптер получает клиент
+# (с уже назначенным случайным прокси) и возвращает нормализованный AggHit.
+# ---------------------------------------------------------------------------
+
+try:
+    from bot_integrations import AGGREGATORS, AggHit
+except ImportError:  # pragma: no cover — модуль опционален
+    AGGREGATORS = []
+
+    class AggHit(dict):  # type: ignore[no-redef]
+        pass
+
+
+def _agg_to_result(hit: "AggHit", value: str) -> Optional[EnrichResult]:
+    """Конвертирует находку агрегатора в ноды/связи FactNode/FactLink."""
+    res = EnrichResult(engine="live")
+    src_name = hit.get("name")
+    person: Optional[FactNode] = None
+    if src_name:
+        person = _node(NodeKind.PERSON, src_name, conf=2,
+                       sources=list(hit.get("sources", ["aggregator"])),
+                       meta={"birth_date": hit.get("birth_date")} if hit.get("birth_date") else {})
+        res.nodes.append(person)
+
+    anchor_id = "__SOURCE__"  # всё вешаем на исходную ноду доски
+    for phone in hit.get("phones", [])[:5]:
+        if phone == value:
+            continue
+        n = _node(NodeKind.PHONE, phone, conf=2, sources=list(hit.get("sources", ["aggregator"])))
+        res.nodes.append(n)
+        res.links.append(_link(anchor_id, n.id, LinkKind.OWNED_BY, weight=0.7,
+                               note="найден через OSINT-агрегатор"))
+        if person is not None:
+            res.links.append(_link(n.id, person.id, LinkKind.OWNED_BY, weight=0.6))
+    for email in hit.get("emails", [])[:5]:
+        if email == value:
+            continue
+        n = _node(NodeKind.EMAIL, email, conf=2, sources=list(hit.get("sources", ["aggregator"])))
+        res.nodes.append(n)
+        res.links.append(_link(anchor_id, n.id, LinkKind.OWNED_BY, weight=0.7,
+                               note="найден через OSINT-агрегатор"))
+        if person is not None:
+            res.links.append(_link(n.id, person.id, LinkKind.OWNED_BY, weight=0.6))
+    for uname in hit.get("usernames", [])[:5]:
+        n = _node(NodeKind.HANDLE, f"@{uname.lstrip('@')}", conf=2,
+                  sources=list(hit.get("sources", ["aggregator"])))
+        res.nodes.append(n)
+        res.links.append(_link(anchor_id, n.id, LinkKind.BELONGS_TO, weight=0.7,
+                               note="tg-username из агрегатора"))
+    if hit.get("geo"):
+        g = _node(NodeKind.GEO, str(hit["geo"]), conf=1,
+                  sources=list(hit.get("sources", ["aggregator"])))
+        res.nodes.append(g)
+        res.links.append(_link(anchor_id, g.id, LinkKind.LOCATED_IN, weight=0.5))
+    return res if res.nodes else None
+
+
+async def _run_aggregators(client: httpx.AsyncClient, kind: NodeKind, value: str) -> Optional[EnrichResult]:
+    """Прогоняет значение через все настроенные агрегаторы, объединяет находки."""
+    merged: Optional[EnrichResult] = None
+    seen_keys: set[tuple[str, str]] = set()
+    for agg in AGGREGATORS:
+        try:
+            hit = await agg(client, value)
+        except Exception:  # noqa: BLE001 — best-effort
+            continue
+        if not hit:
+            continue
+        part = _agg_to_result(hit, value)
+        if part is None:
+            continue
+        if merged is None:
+            merged = part
+        else:
+            for n in part.nodes:
+                key = (n.kind.value, n.value.lower())
+                if key not in seen_keys:
+                    merged.nodes.append(n)
+            merged.links.extend(part.links)
+        for n in (merged.nodes if merged else []):
+            seen_keys.add((n.kind.value, n.value.lower()))
+    return merged
+
+
 # Telethon-обёртки не берут httpx-клиент; диспетчер различает их по сигнатуре.
 MtLiveFn = Callable[[str], Awaitable[Optional[EnrichResult]]]
 
@@ -721,6 +807,19 @@ async def enrich(kind: NodeKind, value: str) -> EnrichResult:
             return _merge_local(result)
 
     mock_fn = _MOCK_DISPATCH.get(kind, _mock_generic)
+    # ЭТАП 5: перед mock — каскад агрегаторов скрытых OSINT-ботов
+    # (Himera / Eye of God / Universal Search). Работает только для kinds,
+    # которые умеют пробивать боты, и только если настроены env-ключи.
+    if AGGREGATORS and kind in (NodeKind.PHONE, NodeKind.EMAIL, NodeKind.HANDLE):
+        async with _new_client() as client:
+            agg_res = await _run_aggregators(client, kind, value)
+        if agg_res is not None:
+            linked = ({lk.from_, lk.to_} for lk in agg_res.links)
+            for n in agg_res.nodes:
+                if not any(n.id in pair for pair in linked):
+                    agg_res.links.append(_link("__SOURCE__", n.id, LinkKind.RELATED_TO, weight=0.5))
+            return _merge_local(agg_res)
+
     # Небольшая искусственная задержка имитирует сетевые вызовы
     # и даёт фронтенду показать spinner.
     await asyncio.sleep(0.4)
