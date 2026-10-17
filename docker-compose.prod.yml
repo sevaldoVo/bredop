@@ -1,0 +1,114 @@
+# ============================================================================
+# ВИЛКА — production compose: PostgreSQL + Nginx(TLS) + certbot.
+# Запуск:  docker compose -f docker-compose.prod.yml up -d --build
+# Перед первым запуском: cp .env.example .env и заполнить секреты.
+# Первый сертификат (один раз, когда nginx уже запущен на :80):
+#   docker compose -f docker-compose.prod.yml exec certbot certonly \
+#     --webroot -w /var/www/certbot -d vilka.app -d www.vilka.app
+# ============================================================================
+
+services:
+  # ---------------------------- database -----------------------------------
+  db:
+    image: postgres:15-alpine
+    container_name: vilka-db
+    environment:
+      POSTGRES_USER: ${VILKA_PG_USER:-vilka}
+      POSTGRES_PASSWORD: ${VILKA_PG_PASSWORD:?set VILKA_PG_PASSWORD in .env}
+      POSTGRES_DB: ${VILKA_PG_DB:-vilka}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${VILKA_PG_USER:-vilka} -d ${VILKA_PG_DB:-vilka}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks: [vilka-net]
+
+  # ---------------------------- backend ------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: vilka-backend
+    expose:
+      - "8000"                       # наружу не торчит — только через nginx
+    environment:
+      VILKA_DATABASE_URL: postgresql+asyncpg://${VILKA_PG_USER:-vilka}:${VILKA_PG_PASSWORD}@db:5432/${VILKA_PG_DB:-vilka}
+      VILKA_JWT_SECRET: ${VILKA_JWT_SECRET:?set VILKA_JWT_SECRET in .env}
+      VILKA_ADMIN_EMAIL: ${VILKA_ADMIN_EMAIL:-admin@vilka.app}
+      VILKA_ADMIN_PASSWORD: ${VILKA_ADMIN_PASSWORD:?set VILKA_ADMIN_PASSWORD in .env}
+      VILKA_CORS_ORIGINS: ${VILKA_CORS_ORIGINS:-https://vilka.app}
+      VILKA_PROXIES: ${VILKA_PROXIES:-}
+      VILKA_TG_API_URL: ${VILKA_TG_API_URL:-}
+      VILKA_TG_API_KEY: ${VILKA_TG_API_KEY:-}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_SESSION_NAME: /app/sessions/vilka
+      NOWPAYMENTS_API_KEY: ${NOWPAYMENTS_API_KEY:-}
+      NOWPAYMENTS_IPN_SECRET: ${NOWPAYMENTS_IPN_SECRET:-}
+      VILKA_SPIDER_DELAY: ${VILKA_SPIDER_DELAY:-1.5}
+      VILKA_SPIDER_MAX_NODES: ${VILKA_SPIDER_MAX_NODES:-50}
+    volumes:
+      - ./data/breaches:/app/data/breaches
+      - ./sessions:/app/sessions
+    depends_on:
+      db:
+        condition: service_healthy
+    command: sh -c "python -c 'import models_sql, asyncio; asyncio.run(models_sql.init_db())' && uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --workers 2"
+    restart: unless-stopped
+    networks: [vilka-net]
+
+  # ---------------------------- frontend -----------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: vilka-web
+    expose:
+      - "80"                         # билд раздаётся nginx-ом контейнера, ходит только к backend по сети
+    environment:
+      VITE_VILKA_API: ${VITE_VILKA_API:-https://vilka.app}
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks: [vilka-net]
+
+  # ---------------------------- reverse proxy ------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: vilka-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - certbot-www:/var/www/certbot
+      - certbot-conf:/etc/letsencrypt
+    depends_on:
+      - backend
+      - web
+    restart: unless-stopped
+    networks: [vilka-net]
+
+  # ---------------------------- TLS (Let's Encrypt) ------------------------
+  certbot:
+    image: certbot/certbot
+    container_name: vilka-certbot
+    volumes:
+      - certbot-www:/var/www/certbot
+      - certbot-conf:/etc/letsencrypt
+    # автопродление: каждые 12 часов проверяем срок и релоадим nginx
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'"
+    restart: unless-stopped
+    networks: [vilka-net]
+
+volumes:
+  pgdata:
+  certbot-www:
+  certbot-conf:
+
+networks:
+  vilka-net:
+    driver: bridge

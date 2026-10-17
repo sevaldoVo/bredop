@@ -121,20 +121,25 @@ def decode_token(token: str) -> dict:
 # Зависимости FastAPI
 # ---------------------------------------------------------------------------
 
+async def get_user_from_token(token: str) -> User:
+    """Валидация JWT + загрузка юзера. Используется HTTP и WebSocket-входом."""
+    payload = decode_token(token)
+    user_id = int(payload["sub"])
+    async for session in session_scope():
+        user = await session.get(User, user_id)
+        break
+    if user is None or not user.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Юзер не найден/заблокирован")
+    return user
+
+
 async def get_current_user(
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> User:
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Нужен Bearer-токен",
                             headers={"WWW-Authenticate": "Bearer"})
-    payload = decode_token(creds.credentials)
-    factory_user_id = int(payload["sub"])
-    async for session in session_scope():
-        user = await session.get(User, factory_user_id)
-        break
-    if user is None or not user.is_active:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Юзер не найден/заблокирован")
-    return user
+    return await get_user_from_token(creds.credentials)
 
 
 async def enforce_credit(

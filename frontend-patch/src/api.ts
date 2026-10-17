@@ -75,6 +75,107 @@ const API_BASE: string = (() => {
 const REQUEST_TIMEOUT_MS = 30_000;
 
 // ---------------------------------------------------------------------------
+// ЭТАП 6: JWT-авторизация (токен в localStorage, ключ `vilka_jwt`)
+// ---------------------------------------------------------------------------
+
+const TOKEN_STORAGE_KEY = 'vilka_jwt';
+
+export function loadToken(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(TOKEN_STORAGE_KEY) ?? null;
+  } catch {
+    return null; // SSR/тесты без localStorage
+  }
+}
+
+export function clearToken(): void {
+  try {
+    globalThis.localStorage?.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    /* noop */
+  }
+}
+
+/** Заголовок Authorization, если токен есть. */
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const token = loadToken();
+  return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
+}
+
+/** Разбор payload JWT (без верификации подписи — только для локальной проверки exp). */
+export function decodeJwtExp(token: string): number | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: number };
+    return typeof json.exp === 'number' ? json.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  credits_balance: number;
+  is_admin: boolean;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+export interface CheckoutResult {
+  invoice_id: string;
+  pay_url: string;
+  amount_usd: number;
+  credits: number;
+  status: string;
+}
+
+/** POST /api/register — регистрация нового аккаунта (даёт стартовые кредиты). */
+export async function register(email: string, password: string): Promise<TokenResponse> {
+  const r = await fetch(`${API_BASE}/api/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!r.ok) throw new EnrichError(r.status, `register ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return (await r.json()) as TokenResponse;
+}
+
+/** POST /api/login — возвращает JWT. */
+export async function login(email: string, password: string): Promise<TokenResponse> {
+  const r = await fetch(`${API_BASE}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!r.ok) throw new EnrichError(r.status, `login ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return (await r.json()) as TokenResponse;
+}
+
+/** GET /api/me — профиль и баланс кредитов. */
+export async function fetchMe(): Promise<AuthUser> {
+  const r = await fetch(`${API_BASE}/api/me`, { headers: authHeaders() });
+  if (!r.ok) throw new EnrichError(r.status, `me ${r.status}`);
+  return (await r.json()) as AuthUser;
+}
+
+/** POST /api/billing/checkout — крипто-инвойс на пополнение кредитов. */
+export async function createCheckout(amountUsd: number): Promise<CheckoutResult> {
+  const r = await fetch(`${API_BASE}/api/billing/checkout`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ amount_usd: amountUsd }),
+  });
+  if (!r.ok) throw new EnrichError(r.status, `checkout ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return (await r.json()) as CheckoutResult;
+}
+
+// ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
 
@@ -90,7 +191,8 @@ export async function enrichNode(node: FactNode): Promise<EnrichResponse> {
   try {
     const res = await fetch(`${API_BASE}/api/enrich`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // ЭТАП 6: JWT подставляется автоматически (402 Payment Required, если кредиты кончились)
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ source_node: node }),
       signal: controller.signal,
     });
@@ -134,7 +236,12 @@ export function enrichNodeStream(
   onEvent: (ev: WsEnrichEvent) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${WS_BASE}/ws/enrich`);
+    // ЭТАП 6: WebSocket не умеет заголовки — JWT едет query-параметром (бэк читает ?token=).
+    const token = loadToken();
+    const wsUrl = token
+      ? `${WS_BASE}/ws/enrich?token=${encodeURIComponent(token)}`
+      : `${WS_BASE}/ws/enrich`;
+    const ws = new WebSocket(wsUrl);
     let settled = false;
 
     ws.onopen = () => ws.send(JSON.stringify({ action: 'enrich', node }));
@@ -204,7 +311,9 @@ export async function spiderRun(
   signal?: AbortSignal,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(`${WS_BASE}/ws/enrich`);
+    // ЭТАП 6: JWT в query (WS не умеет заголовки), см. enrichNodeStream.
+    const token = loadToken();
+    const ws = new WebSocket(token ? `${WS_BASE}/ws/enrich?token=${encodeURIComponent(token)}` : `${WS_BASE}/ws/enrich`);
     const finish = (fn: () => void) => { try { ws.close(); } catch { /* noop */ } fn(); };
     signal?.addEventListener('abort', () => finish(() => reject(new Error('aborted'))));
     ws.onopen = () =>
@@ -227,7 +336,7 @@ export async function spiderStart(
 ): Promise<string> {
   const r = await fetch(`${API_BASE}/api/spider`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: authHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify({ start_node_id: startNodeId, depth, graph }),
   });
   if (!r.ok) throw new Error(`spider start failed: ${r.status}`);
@@ -250,10 +359,28 @@ export async function findPath(
     `${API_BASE}/api/path?from_id=${encodeURIComponent(fromId)}&to_id=${encodeURIComponent(toId)}`,
     {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: authHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify(graph),
     },
   );
   if (!r.ok) throw new Error(`path query failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
   return (await r.json()) as PathResult;
+}
+
+// ---------------------------------------------------------------------------
+// ЭТАП 6: экспорт графа (GraphML для Maltego/Gephi) — скачивание файла
+// ---------------------------------------------------------------------------
+
+/** Скачивает GraphML-снимок доски. Возвращает Blob — фронт делает download. */
+export async function exportGraph(
+  graph: { nodes: FactNode[]; links: FactLink[] },
+  format: 'graphml' | 'json' = 'graphml',
+): Promise<Blob> {
+  const r = await fetch(`${API_BASE}/api/export?format=${format}`, {
+    method: 'POST',
+    headers: authHeaders({ 'content-type': 'application/json' }),
+    body: JSON.stringify(graph),
+  });
+  if (!r.ok) throw new EnrichError(r.status, `export ${r.status}`);
+  return await r.blob();
 }

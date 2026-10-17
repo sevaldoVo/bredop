@@ -103,3 +103,38 @@ INV=$(curl -s -X POST localhost:8000/api/billing/checkout -H "authorization: Bea
 curl -s -X POST localhost:8000/api/webhook/crypto -H 'content-type: application/json' \
   -d "{\"payment_id\":\"$INV\",\"payment_status\":\"finished\"}"   # -> credited 1000
 ```
+
+## 🚀 ЭТАП 6: Production-деплой (VPS + TLS + CI/CD)
+
+### Состав
+- `nginx/nginx.conf` — reverse proxy: HTTPS (vilka.app), `/api/*` и `/ws/*` → backend:8000, SPA → web; HSTS/X-Frame-Options/CSP/gzip, WS-upgrade.
+- `docker-compose.prod.yml` — **PostgreSQL 15** (volume `pgdata`) вместо SQLite, backend/web без публичных портов (весь трафик через nginx), **certbot** с автопродлением каждые 12ч.
+- `.github/workflows/deploy.yml` — CI/CD: push в master → SSH на VPS → `git reset --hard` → init_db (миграции) → `docker compose up -d --build` → healthcheck с авто-rollback.
+
+### Первый запуск на сервере (за 1 минуту)
+```bash
+git clone https://github.com/sevaldoVo/bredop.git vilka && cd vilka
+cp .env.example .env   # заполнить: VILKA_PG_PASSWORD, VILKA_JWT_SECRET, VILKA_ADMIN_*
+# DNS A-запись vilka.app -> IP сервера; порты 80/443 открыты
+docker compose -f docker-compose.prod.yml up -d --build
+# самоподписанный cert, чтобы nginx поднялся до первого выпуска LE:
+openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+  -keyout ./nginx/ssl/privkey.pem -out ./nginx/ssl/fullchain.pem -subj "/CN=vilka.app" 2>/dev/null || true
+docker compose -f docker-compose.prod.yml exec certbot certonly \
+  --webroot -w /var/www/certbot -d vilka.app -d www.vilka.app
+docker compose -f docker-compose.prod.yml exec nginx nginx -s reload
+```
+
+### Настройка GitHub Secrets (для автодеплоя)
+В репо: Settings → Secrets and variables → Actions:
+`VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (приватный ключ), `VPS_PATH` (путь к клону).
+Ключ генерится на сервере: `ssh-keygen -t ed25519 -f vilka_deploy`, публичную часть — в `~/.ssh/authorized_keys`.
+
+### Миграции БД
+Схема поднимается идемпотентным `create_all` (startup бэкенда + шаг CI). При появлении breaking-изменений подключить alembic:
+`docker compose -f docker-compose.prod.yml exec backend alembic init migrations && alembic revision --autogenerate && alembic upgrade head`.
+
+### Auth на фронте (ЭТАП 6)
+- `frontend-patch/src/useAuth.ts` — хук `useAuth()`: login/register/logout/checkout/refresh, JWT хранится в localStorage (`vilka_jwt`), клиентская проверка `exp`.
+- `src/api.ts`: все запросы (enrich/spider/path/export) автоматически несут `Authorization: Bearer`; WebSocket получает токен query-параметром `?token=` (бэк валидирует его и рвёт сессию кодом 4401 при мусорном токене).
+- Режим SaaS включён по умолчанию (`VILKA_AUTH_ENFORCED=1`): анонимный enrich → 401, пустой баланс → 402 Payment Required.

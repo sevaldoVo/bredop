@@ -59,6 +59,7 @@ try:
         MeResponse,
         enforce_credit,
         get_current_user,
+        get_user_from_token,
         login_user,
         register_user,
         whoami,
@@ -156,11 +157,12 @@ def _finalize(result, source_id: str) -> tuple[list[FactNode], list[FactLink]]:
 
 
 # ---------------------------------------------------------------------------
-# ЭТАП 5: SaaS-роуты (auth / billing). Роуты enrich получают Depends(enforce_credit)
-# только когда AUTH_ENFORCED=1 и sqlalchemy установлен.
+# ---------------------------------------------------------------------------
+# ЭТАП 5: SaaS-роуты (auth / billing). Роут enrich получает Depends(enforce_credit)
+# только когда AUTH_ENFORCED=1 и sqlalchemy установлен — иначе анонимный демо-режим.
 # ---------------------------------------------------------------------------
 
-if _HAS_SAAS:
+if _HAS_SAAS and AUTH_ENFORCED:
 
     @app.post("/api/register", response_model=TokenResponse)
     async def api_register(body: RegisterRequest) -> TokenResponse:
@@ -171,11 +173,14 @@ if _HAS_SAAS:
         return await login_user(body)
 
     @app.get("/api/me", response_model=MeResponse)
-    async def api_me(user: User = Depends(get_current_user)) -> MeResponse:
+    async def api_me(user: Annotated[User, Depends(get_current_user)]) -> MeResponse:
         return await whoami(user)
 
     @app.post("/api/billing/checkout", response_model=CheckoutResponse)
-    async def api_checkout(body: CheckoutRequest, user: User = Depends(get_current_user)) -> CheckoutResponse:
+    async def api_checkout(
+        body: CheckoutRequest,
+        user: Annotated[User, Depends(get_current_user)],
+    ) -> CheckoutResponse:
         return await create_checkout(user, body)
 
     # Вебхук — ПУБЛИЧНЫЙ эндпоинт (его зовёт процессинг), защита HMAC-подписью.
@@ -184,25 +189,10 @@ if _HAS_SAAS:
         return await handle_crypto_webhook(request)
 
 
-async def _audit_enrich(user_id: Optional[int], kind: str, value: str, engine: str, n_nodes: int) -> None:
-    """Пишем аудит-лог пробива (best-effort, не роняем основной запрос)."""
-    if not _HAS_SAAS or user_id is None:
-        return
-    try:
-        async for session in session_scope():
-            session.add(AuditLog(user_id=user_id, action="enrich",
-                                 target_kind=kind, target_value=value[:256],
-                                 detail=f"engine={engine} nodes={n_nodes}"))
-            await session.commit()
-            break
-    except Exception:  # noqa: BLE001
-        pass
-
-
 @app.post("/api/enrich", response_model=EnrichResponse)
 async def api_enrich(
     req: EnrichRequest,
-    user: Optional[User] = Depends(enforce_credit) if (_HAS_SAAS and AUTH_ENFORCED) else None,
+    user: Annotated[Optional[User], Depends(enforce_credit)] if (_HAS_SAAS and AUTH_ENFORCED) else None,
 ) -> EnrichResponse:
     """Пробивает исходную ноду и возвращает новые ноды + связи.
 
@@ -284,6 +274,19 @@ async def _handle_enrich_message(ws: WebSocket, msg: dict[str, Any]) -> None:
 
 @app.websocket("/ws/enrich")
 async def ws_enrich(ws: WebSocket) -> None:
+    # ЭТАП 6: SaaS-вход. WS не умеет заголовки — JWT приходит query-параметром ?token=.
+    # Формат ответа на отказ: close(code=4401). Без токена сессия работает как раньше
+    # (демо/локалка), но боевые live-каналы ограничивает каскад в enrichment.py.
+    token = ws.query_params.get("token") or ""
+    if token:
+        try:
+            await auth.get_user_from_token(token)
+        except HTTPException as exc:
+            await ws.close(code=4401, reason=str(exc.detail)[:120])
+            return
+        except Exception:
+            await ws.close(code=4401, reason="invalid token")
+            return
     await ws.accept()
     try:
         while True:
