@@ -1,0 +1,3 @@
+ivan.petrov@mail.ru:secret123
+anna@yandex.ru:hunter2
++79990000000;leakuser@bk.ru

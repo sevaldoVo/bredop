@@ -21,7 +21,7 @@ import time
 import uuid
 from typing import Any, Optional, Union
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -66,6 +66,17 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
+
+
+@app.on_event("startup")
+async def _startup_breaches() -> None:
+    """ЭТАП 4: при старте индексируем локальные сливы ./data/breaches (best-effort)."""
+    try:
+        from breaches import rescan
+        n = rescan()
+        print(f"[vilka] breach-db indexed records={n} dir={os.getenv('VILKA_BREACH_DIR', './data/breaches')}")
+    except Exception as exc:  # noqa: BLE001 — бэкенд живёт и без утечек
+        print(f"[vilka] breach-db init skipped: {exc}")
 
 
 @app.get("/api/health")
@@ -375,6 +386,95 @@ async def api_path_body(body: GraphSnapshot, from_id: str, to_id: str) -> dict[s
 async def kinds() -> list[str]:
     """Список поддерживаемых типов нод (для тулзов/отладки)."""
     return [k.value for k in NodeKind]
+
+
+# ---------------------------------------------------------------------------
+# ЭТАП 4: экспорт графа (GraphML — Maltego/Gephi/offline-анализ)
+# (снимок доски — уже объявленный GraphSnapshot из блока /api/path)
+# ---------------------------------------------------------------------------
+
+
+def _xml_escape(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+             .replace('"', "&quot;"))
+
+
+def _graphml(nodes: list[FactNode], links: list[FactLink]) -> str:
+    """Конвертирует граф в GraphML (схемы declare'ов фиксированы, как любит Gephi)."""
+    lines: list[str] = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns"',
+        '         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
+        '         xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns'
+        ' http://graphml.graphdrawing.org/xmlns/1.1/graphml.xsd">',
+        '  <key id="kind" for="node" attr.name="kind" attr.type="string"/>',
+        '  <key id="value" for="node" attr.name="value" attr.type="string"/>',
+        '  <key id="label" for="node" attr.name="label" attr.type="string"/>',
+        '  <key id="conf" for="node" attr.name="conf" attr.type="int"/>',
+        '  <key id="sources" for="node" attr.name="sources" attr.type="string"/>',
+        '  <key id="created" for="node" attr.name="createdAt" attr.type="string"/>',
+        '  <key id="lkind" for="edge" attr.name="kind" attr.type="string"/>',
+        '  <key id="weight" for="edge" attr.name="weight" attr.type="double"/>',
+        '  <key id="lnote" for="edge" attr.name="note" attr.type="string"/>',
+        f'  <graph id="vilka" edgedefault="directed">',
+    ]
+    for n in nodes:
+        lines.append(f'    <node id="{_xml_escape(n.id)}">')
+        lines.append(f'      <data key="kind">{n.kind.value}</data>')
+        lines.append(f'      <data key="value">{_xml_escape(n.value)}</data>')
+        if n.label:
+            lines.append(f'      <data key="label">{_xml_escape(n.label)}</data>')
+        lines.append(f'      <data key="conf">{n.conf}</data>')
+        if n.sources:
+            lines.append(f'      <data key="sources">{_xml_escape(",".join(n.sources))}</data>')
+        lines.append(f'      <data key="created">{n.createdAt}</data>')
+        lines.append('    </node>')
+    by_id = {n.id for n in nodes}
+    for lk in links:
+        if lk.from_ not in by_id or lk.to_ not in by_id:
+            continue  # не пишем висячие рёбра — Maltego их не любит
+        lines.append(f'    <edge id="{_xml_escape(lk.id)}" source="{_xml_escape(lk.from_)}" target="{_xml_escape(lk.to_)}">')
+        lines.append(f'      <data key="lkind">{lk.kind.value}</data>')
+        lines.append(f'      <data key="weight">{lk.weight}</data>')
+        if lk.note:
+            lines.append(f'      <data key="lnote">{_xml_escape(lk.note)}</data>')
+        lines.append('    </edge>')
+    lines += ['  </graph>', '</graphml>']
+    return "\n".join(lines)
+
+
+@app.post("/api/export")
+async def api_export_post(body: GraphSnapshot, format: str = "graphml") -> Any:
+    """Экспорт снимка доски (фронт присылает свой граф). Формат: graphml."""
+    if format != "graphml":
+        raise HTTPException(status_code=400, detail="supported formats: graphml")
+    _server_graph["current"] = (body.nodes, body.links)  # заодно обновим серверный кеш
+    xml = _graphml(body.nodes, body.links)
+    return Response(
+        content=xml,
+        media_type="application/xml",
+        headers={"content-disposition": 'attachment; filename="vilka-board.graphml"'},
+    )
+
+
+@app.get("/api/export")
+async def api_export(format: str = "graphml") -> Any:
+    """Экспорт серверного снимка (последний POST /api/path или /api/export).
+
+    Пример: GET /api/export?format=graphml -> vilka-board.graphml (Maltego/Gephi).
+    """
+    if format != "graphml":
+        raise HTTPException(status_code=400, detail="supported formats: graphml")
+    graph = _server_graph.get("current")
+    if graph is None:
+        raise HTTPException(status_code=404,
+                            detail="no server-side graph; POST your board to /api/export")
+    xml = _graphml(graph[0], graph[1])
+    return Response(
+        content=xml,
+        media_type="application/xml",
+        headers={"content-disposition": 'attachment; filename="vilka-board.graphml"'},
+    )
 
 
 if __name__ == "__main__":

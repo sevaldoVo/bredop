@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
-node_modules/
-dist/
+venv/
+.venv/
 .env
+.env.local
+*.env.*
+backend/data/breaches/*.db

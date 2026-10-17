@@ -29,6 +29,7 @@ class NodeKind(str, Enum):
     ORG = "org"
     EVENT = "event"
     NOTE = "note"
+    IMAGE = "image"  # ЭТАП 4: URL/base64 картинки для reverse-search
 
 
 class LinkKind(str, Enum):

@@ -360,6 +360,123 @@ async def _live_phone_tg(client: httpx.AsyncClient, phone: str) -> Optional[Enri
 
 
 # ---------------------------------------------------------------------------
+# LIVE: локальные базы утечек (ЭТАП 4) — синхронный SQLite, не нужен client
+# ---------------------------------------------------------------------------
+
+def _live_breaches(kind: NodeKind, value: str) -> Optional[EnrichResult]:
+    """Ищет email/phone в локальной БД ./data/breaches/ (SQLite).
+
+    Находка => ноды EVENT («Утечка <имя>») + NOTE с деталями и связи
+    LEAKED_WITH / MENTIONED_IN к исходной ноде.
+    """
+    if kind not in (NodeKind.EMAIL, NodeKind.PHONE):
+        return None
+    try:
+        from breaches import lookup  # ленивый импорт: модуль опционален
+        found = lookup(value)
+    except Exception:  # noqa: BLE001 — локальная БД best-effort
+        return None
+    if not found:
+        return None
+    res = EnrichResult(engine="live")
+    for rec in found[:5]:
+        breach = rec["breach"]
+        ev = _node(
+            NodeKind.EVENT, f"Утечка {breach}",
+            conf=3, sources=["local:breach-db"],
+            meta={"has_credential": rec.get("has_credential", False)},
+        )
+        res.nodes.append(ev)
+        if kind is NodeKind.EMAIL:
+            res.links.append(_link("__SOURCE__", ev.id, LinkKind.LEAKED_WITH, weight=0.9,
+                                   note="email найден в локальном сливе"))
+        else:
+            res.links.append(_link("__SOURCE__", ev.id, LinkKind.MENTIONED_IN, weight=0.9,
+                                   note="телефон найден в локальном сливе"))
+        if rec.get("has_credential"):
+            note = _node(
+                NodeKind.NOTE, f"В сливе «{breach}» для {value} есть пароль",
+                conf=2, sources=["local:breach-db"],
+            )
+            res.nodes.append(note)
+            res.links.append(_link(note.id, ev.id, LinkKind.RELATED_TO, weight=0.5))
+    return res
+
+
+# ---------------------------------------------------------------------------
+# LIVE: Reverse Image Search (ЭТАП 4) — Yandex Images, URL или base64 data-URI
+# ---------------------------------------------------------------------------
+
+async def _live_image(client: httpx.AsyncClient, value: str) -> Optional[EnrichResult]:
+    """Картинка -> ACCOUNT/HANDLE (соцсети с профилями) + NOTE (страницы-источники)."""
+    if os.getenv("VILKA_IMAGE_SEARCH", "1").strip() == "0":
+        return None
+    try:
+        from image_search import reverse_image_search  # ленивый импорт
+        hits = await reverse_image_search(value)
+    except Exception:  # noqa: BLE001 — live best-effort
+        return None
+    if not hits:
+        return None
+    res = EnrichResult(engine="live")
+    seen_handles: set[str] = set()
+    social_count = 0
+    source_notes = 0
+    for h in hits:
+        if h["kind"] == "social" and social_count < 8:
+            handle = (h.get("handle") or "").lstrip("@")
+            key = f"{h['platform']}:{handle.lower()}"
+            if not handle or key in seen_handles:
+                continue
+            seen_handles.add(key)
+            social_count += 1
+            acc = _node(
+                NodeKind.ACCOUNT, f"{h['platform']}:{handle}",
+                label=f"@{handle} ({h['platform']})",
+                conf=2, sources=["live:yandex-reverse-image"],
+                meta={"platform": h["platform"], "url": h["url"], "from_image": True},
+            )
+            res.nodes.append(acc)
+            res.links.append(_link(acc.id, "__SOURCE__", LinkKind.BELONGS_TO, weight=0.7,
+                                   note="профиль найден по обратному поиску картинки"))
+            hd = _node(
+                NodeKind.HANDLE, f"@{handle}",
+                conf=1, sources=["live:yandex-reverse-image"],
+                meta={"platform": h["platform"]},
+            )
+            res.nodes.append(hd)
+            res.links.append(_link(hd.id, acc.id, LinkKind.RELATED_TO, weight=0.6))
+        elif h["kind"] == "source" and source_notes < 6:
+            source_notes += 1
+            note = _node(
+                NodeKind.NOTE, f"Источник картинки: {h['url'][:120]}",
+                conf=1, sources=["live:yandex-reverse-image"],
+                meta={"url": h["url"], "platform": h.get("platform")},
+            )
+            res.nodes.append(note)
+            res.links.append(_link(note.id, "__SOURCE__", LinkKind.MENTIONED_IN, weight=0.4))
+    return res if res.nodes else None
+
+
+def _mock_image(value: str) -> EnrichResult:
+    """Детерминированный фолбэк reverse-image (для отладки без Yandex)."""
+    rng = _seeded_rng(value)
+    res = EnrichResult(engine="mock")
+    plat = rng.choice(["instagram", "vk", "pinterest"])
+    handle = f"{rng.choice(_LAST).lower().rstrip('ov')}{rng.randint(10, 99)}"
+    acc = _node(NodeKind.ACCOUNT, f"{plat}:{handle}", label=f"@{handle} ({plat})",
+                conf=1, sources=["mock:reverse-image"], meta={"platform": plat})
+    dom = _node(NodeKind.DOMAIN, f"{rng.choice(['pic', 'img', 'cdn'])}.{rng.choice(_TLDS)}",
+                conf=1, sources=["mock:exif-guess"])
+    res.nodes = [acc, dom]
+    res.links = [
+        _link(acc.id, "__SOURCE__", LinkKind.BELONGS_TO, weight=0.4),
+        _link("__SOURCE__", dom.id, LinkKind.HOSTED_AT, weight=0.3, note="предполагаемый хостинг"),
+    ]
+    return res
+
+
+# ---------------------------------------------------------------------------
 # MOCK-генераторы (детерминированные, для теста и фолбэка)
 # ---------------------------------------------------------------------------
 
@@ -518,6 +635,7 @@ _MOCK_DISPATCH: dict[NodeKind, MockFn] = {
     NodeKind.EMAIL: _mock_email,
     NodeKind.DOMAIN: _mock_domain,
     NodeKind.HANDLE: _mock_handle,
+    NodeKind.IMAGE: _mock_image,
 }
 
 # Телефон: сначала пробуем live-TG (если VILKA_TG_API_URL задан), при неудаче — mock.
@@ -525,7 +643,12 @@ _LIVE_DISPATCH: dict[NodeKind, list[LiveFn]] = {
     NodeKind.DOMAIN: [_live_domain],
     NodeKind.IP: [_live_ip],
     NodeKind.PHONE: [_live_phone_tg],
+    NodeKind.IMAGE: [_live_image],
 }
+
+# ЭТАП 4: синхронный локальный live-канал (SQLite ./data/breaches).
+# Проверяется раньше сетевых enricher'ов и mock — локальный слив точнее.
+_LOCAL_LIVE_KINDS = (NodeKind.EMAIL, NodeKind.PHONE)
 
 
 # Telethon-обёртки не берут httpx-клиент; диспетчер различает их по сигнатуре.
@@ -538,14 +661,35 @@ _MTPROTO_DISPATCH: dict[NodeKind, MtLiveFn] = {
 
 
 async def enrich(kind: NodeKind, value: str) -> EnrichResult:
-    """Пробивает значение: MTProto -> live HTTP -> mock.
+    """Пробивает значение: локальные утечки -> MTProto -> live HTTP -> mock.
 
-    Порядок каскада (ЭТАП 3):
+    Порядок каскада (ЭТАП 4):
+      0. Локальная БД утечек ./data/breaches (для email/phone) — самый точный
+         источник, бьёт всё остальное;
       1. Telethon/MTProto (для phone/handle, если VILKA_TELETHON_ENABLED=1);
       2. HTTP live-источники — каждый через СЛУЧАЙНЫЙ прокси из пула
          VILKA_PROXIES (см. _new_client) — ротация на запрос, anti-429/OPSEC;
       3. Детерминированный mock-фолбэк.
     """
+    if kind in _LOCAL_LIVE_KINDS:
+        local = _live_breaches(kind, value)
+        if local is not None:
+            # generic-связи «осиротевших» локальных нод к источнику
+            linked = ({lk.from_, lk.to_} for lk in local.links)
+            for n in local.nodes:
+                if not any(n.id in pair for pair in linked):
+                    local.links.append(_link("__SOURCE__", n.id, LinkKind.RELATED_TO, weight=0.5))
+    else:
+        local = None
+
+    def _merge_local(result: EnrichResult) -> EnrichResult:
+        """Дописывает находки локальной БД утечек к live/mock-результату."""
+        if local is not None:
+            result.nodes.extend(local.nodes)
+            result.links.extend(local.links)
+            result.engine = "live"  # локальный слив — достоверный источник
+        return result
+
     mt_fn = _MTPROTO_DISPATCH.get(kind)
     if mt_fn is not None:
         try:
@@ -557,7 +701,7 @@ async def enrich(kind: NodeKind, value: str) -> EnrichResult:
             for n in result.nodes:
                 if not any(n.id in pair for pair in linked):
                     result.links.append(_link("__SOURCE__", n.id, LinkKind.RELATED_TO, weight=0.5))
-            return result
+            return _merge_local(result)
 
     lives = _LIVE_DISPATCH.get(kind, [])
     for live in lives:
@@ -574,10 +718,10 @@ async def enrich(kind: NodeKind, value: str) -> EnrichResult:
             for n in result.nodes:
                 if not any(n.id in pair for pair in linked):
                     result.links.append(_link("__SOURCE__", n.id, LinkKind.RELATED_TO, weight=0.5))
-            return result
+            return _merge_local(result)
 
     mock_fn = _MOCK_DISPATCH.get(kind, _mock_generic)
     # Небольшая искусственная задержка имитирует сетевые вызовы
     # и даёт фронтенду показать spinner.
     await asyncio.sleep(0.4)
-    return mock_fn(value)
+    return _merge_local(mock_fn(value))

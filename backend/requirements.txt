@@ -10,3 +10,8 @@ websockets>=12.0
 # ЭТАП 3:
 networkx>=3.1
 telethon>=1.36
+
+# ЭТАП 4:
+# curl_cffi — опциональный TLS-фингерпринт Chrome для reverse-image (без него
+# enricher честно фолбэкается на mock). Локальные утечки — на встроенном sqlite3.
+curl-cffi>=0.7.0
