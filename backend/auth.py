@@ -42,8 +42,33 @@ _bearer = HTTPBearer(auto_error=False)
 
 
 def _auth_enforced() -> bool:
-    """P0 FIX: динамический флаг (env читается на каждый запрос, а не при импорте)."""
-    return os.getenv("VILKA_AUTH_ENFORCED", "1") == "1"
+    """P0 FIX: динамический флаг (env читается на каждый запрос, а не при импорте).
+
+    ЭТАП 7 (рассинхрон имён): код исторически читает VILKA_AUTH_ENFORCED, а доки/
+    compose/.env.example — AUTH_ENFORCED. Поддерживаем ОБА имени: приоритет у
+    префиксного VILKA_*, фолбэк — короткий AUTH_ENFORCED, дефолт — включено.
+    """
+    val = os.getenv("VILKA_AUTH_ENFORCED", os.getenv("AUTH_ENFORCED", "1"))
+    return val.strip().lower() not in ("0", "false", "off", "no")
+
+
+async def refund_credit(user_id: int, amount: int = None) -> None:
+    """ЭТАП 7 P0: возврат списанного кредита (например, при 422 валидации тела).
+
+    Идемпотентность обеспечивает вызывающий (RequestValidationError-хендлер),
+    который знает jti токена и помечает его как refunded."""
+    cost = ENRICH_COST if amount is None else amount
+    async for session in session_scope():
+        await session.execute(
+            update(User).where(User.id == user_id).values(
+                credits_balance=User.credits_balance + cost
+            )
+        )
+        session.add(AuditLog(
+            user_id=user_id, action="credit_refund", credits_delta=cost,
+            detail=f"refund cost={cost}",
+        ))
+        await session.commit()
 
 
 async def optional_paid_user(
@@ -59,8 +84,13 @@ async def optional_paid_user(
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Нужен Bearer-токен",
                             headers={"WWW-Authenticate": "Bearer"})
-    user = await get_user_from_token(creds.credentials)
-    return await enforce_credit(user)
+    user, charged = await get_user_from_token(creds.credentials)
+    if charged:
+        # ЭТАП 7 P0: помечаем юзера «заряженным» — RequestValidationError-хендлер в
+        # main.py вернёт кредит, если FastAPI завернёт тело запроса (422) ПОСЛЕ
+        # того, как зависимость уже списала его. Успешный 200 сбрасывает флаг.
+        user._vilka_charged = True  # type: ignore[attr-defined]
+    return user
 
 
 EnrichUser = Annotated[User | None, Depends(optional_paid_user)]
@@ -146,8 +176,8 @@ def decode_token(token: str) -> dict:
 # Зависимости FastAPI
 # ---------------------------------------------------------------------------
 
-async def get_user_from_token(token: str) -> User:
-    """Валидация JWT + загрузка юзера. Используется HTTP и WebSocket-входом."""
+async def load_user_from_token(token: str) -> User:
+    """Только валидация JWT + загрузка юзера (без списания). Для /api/me, /api/admin/*."""
     payload = decode_token(token)
     user_id = int(payload["sub"])
     async for session in session_scope():
@@ -158,30 +188,41 @@ async def get_user_from_token(token: str) -> User:
     return user
 
 
-async def get_current_user(
-    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> User:
-    if creds is None or creds.scheme.lower() != "bearer":
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Нужен Bearer-токен",
-                            headers={"WWW-Authenticate": "Bearer"})
-    return await get_user_from_token(creds.credentials)
+async def get_user_from_token(token: str) -> tuple[User, bool]:
+    """Валидация JWT + загрузка юзера. Используется HTTP и WebSocket-входом.
 
-
-async def enforce_credit(
-    user: Annotated[User, Depends(get_current_user)],
-) -> User:
-    """P0 FIX (ЭТАП 5): AUTH_ENFORCED читается динамически — при VILKA_AUTH_ENFORCED=0
-    зависимость пропускает запрос без JWT и ничего не списывает (демо-режим)."""
-    if not _auth_enforced():
-        return user  # type: ignore[unreachable]
-
+    Возвращает (user, charged): charged=True, если токен уже «потрачен» на этот
+    запрос (см. _charge_token) — это сигнал для refund-хендлера при 422."""
+    user = await load_user_from_token(token)
     async for session in session_scope():
+        charged = await _charge_token(session, token, user)
+        break
+    return user, charged
+
+
+async def _charge_token(session: AsyncSession, token: str, user: User) -> bool:
+    """ЭТАП 7 P0: атомарное списание кредита НА УРОВНЕ ТОКЕНА (уникальный jti).
+
+    Ключевое отличие от старой схемы: UPDATE по таблице used_tokens с UNIQUE(jti)
+    происходит ДО валидации тела запроса, но идемпотентен по jti — повторная
+    отправка того же токена не спишет второй кредит. Если тело потом не пройдёт
+    валидацию (422), RequestValidationError-хендлер в main.py сделает refund
+    (DELETE строки + возврат баланса), и баланс останется нетронутым.
+    """
+    if not _auth_enforced():
+        return False
+    payload = decode_token(token)
+    jti = payload.get("jti", "")
+    try:
+        from models_sql import UsedToken  # noqa: WPS433
+    except ImportError:
+        # Fallback без таблицы used_tokens: списываем напрямую (старое поведение).
         result = await session.execute(
             update(User)
             .where(User.id == user.id, User.credits_balance >= ENRICH_COST)
             .values(credits_balance=User.credits_balance - ENRICH_COST)
         )
-        if result.rowcount == 0:  # строка не обновилась => кредитов <= 0
+        if result.rowcount == 0:
             raise HTTPException(
                 status.HTTP_402_PAYMENT_REQUIRED,
                 f"Недостаточно кредитов (нужно {ENRICH_COST}). Пополните баланс.",
@@ -191,8 +232,66 @@ async def enforce_credit(
             credits_delta=-ENRICH_COST, detail=f"cost={ENRICH_COST}",
         ))
         await session.commit()
+        return True
+
+    from sqlalchemy.exc import IntegrityError
+    try:
+        session.add(UsedToken(jti=jti, user_id=user.id))
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        # Токен уже был использован ранее — НЕ списываем повторно; считаем,
+        # что кредит уже потрачен на тот первый запрос (charged=False => refund не нужен).
+        raise HTTPException(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            "Токен уже использован. Получите новый (login) или пополните баланс.",
+        ) from None
+    result = await session.execute(
+        update(User)
+        .where(User.id == user.id, User.credits_balance >= ENRICH_COST)
+        .values(credits_balance=User.credits_balance - ENRICH_COST)
+    )
+    if result.rowcount == 0:
+        await session.rollback()
+        raise HTTPException(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            f"Недостаточно кредитов (нужно {ENRICH_COST}). Пополните баланс.",
+        )
+    session.add(AuditLog(
+        user_id=user.id, action="credit_spend",
+        credits_delta=-ENRICH_COST, detail=f"cost={ENRICH_COST} jti={jti[:8]}",
+    ))
+    await session.commit()
+    return True
+
+
+async def get_current_user(
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> User:
+    """Только аутентификация (для /api/me, /api/admin/*) — БЕЗ списания кредита."""
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Нужен Bearer-токен",
+                            headers={"WWW-Authenticate": "Bearer"})
+    user = await load_user_from_token(creds.credentials)
+    return user
+
+
+async def enforce_credit(user: Annotated[User, Depends(get_current_user)]) -> User:
+    """Совместимость API Этапа 5/6: кредит уже списан в get_user_from_token.
+
+    Возвращает свежий объект юзера с обновлённым балансом; если на объекте стоит
+    флаг _vilka_charged (выставлен optional_paid_user), сбрасываем его — успешный
+    ответ не должен триггерить refund в RequestValidationError-хендлере."""
+    async for session in session_scope():
         refreshed = await session.get(User, user.id)
-        return refreshed or user
+        break
+    result = refreshed or user
+    if getattr(result, "_vilka_charged", False):
+        try:
+            del result._vilka_charged  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+    return result
 
 
 # ---------------------------------------------------------------------------

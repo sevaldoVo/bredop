@@ -23,6 +23,8 @@ from typing import Any, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from enrichment import enrich
@@ -53,6 +55,7 @@ except ImportError:  # pragma: no cover — telethon не установлен
 try:
     from models_sql import AuditLog, User, init_db, session_scope
     import auth
+    from sqlalchemy import update as sa_update
     from auth import (
         LoginRequest,
         RegisterRequest,
@@ -66,6 +69,7 @@ try:
         login_user,
         optional_paid_user,
         register_user,
+        refund_credit,
         whoami,
     )
     from billing import CheckoutRequest, CheckoutResponse, WebhookAck, create_checkout, handle_crypto_webhook
@@ -75,7 +79,16 @@ except ImportError:  # pragma: no cover
 
 # P0 FIX: флаг читается динамически в auth._auth_enforced() на каждый запрос —
 # здесь только для информации/логирования.
-AUTH_ENFORCED = os.getenv("VILKA_AUTH_ENFORCED", "1" if _HAS_SAAS else "0") == "1"
+# ЭТАП 7: флаг читается ЧЕРЕЗ auth._auth_enforced() (поддерживает и
+# VILKA_AUTH_ENFORCED, и короткий AUTH_ENFORCED). Если SaaS-слой не импортирован,
+# считаем по тем же двум именам напрямую.
+def _flag_raw() -> str:
+    return os.getenv("VILKA_AUTH_ENFORCED", os.getenv("AUTH_ENFORCED", ""))
+
+if _HAS_SAAS:
+    AUTH_ENFORCED = auth._auth_enforced()  # noqa: SLF001 — единый источник правды
+else:
+    AUTH_ENFORCED = (_flag_raw() or "0").strip().lower() not in ("0", "false", "off", "no")
 
 SOURCE_PLACEHOLDER = "__SOURCE__"
 
@@ -211,6 +224,96 @@ if _HAS_SAAS:
     async def api_webhook_crypto(request: Request) -> WebhookAck:
         return await handle_crypto_webhook(request)
 
+    # -----------------------------------------------------------------
+    # ЭТАП 7 (админка): список юзеров + аудит-лог. Доступ только role=admin.
+    # -----------------------------------------------------------------
+    @app.get("/api/admin/users")
+    async def api_admin_users(user: CurrentUser, limit: int = 100) -> dict[str, Any]:
+        if getattr(user, "role", "") != "admin":
+            raise HTTPException(status_code=403, detail="Только для администраторов")
+        from sqlalchemy import select as sa_select
+        async for session in session_scope():
+            rows = (await session.execute(
+                sa_select(User).order_by(User.id.desc()).limit(min(limit, 500))
+            )).scalars().all()
+            break
+        return {"users": [
+            {"id": u.id, "email": u.email, "role": u.role,
+             "credits_balance": u.credits_balance, "is_active": u.is_active,
+             "created_at": u.created_at.isoformat() if u.created_at else None}
+            for u in rows
+        ]}
+
+    @app.get("/api/admin/audit")
+    async def api_admin_audit(
+        user: CurrentUser, limit: int = 200, user_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        if getattr(user, "role", "") != "admin":
+            raise HTTPException(status_code=403, detail="Только для администраторов")
+        from sqlalchemy import select as sa_select
+        stmt = sa_select(AuditLog).order_by(AuditLog.id.desc()).limit(min(limit, 1000))
+        if user_id is not None:
+            stmt = stmt.where(AuditLog.user_id == user_id)
+        async for session in session_scope():
+            rows = (await session.execute(stmt)).scalars().all()
+            break
+        return {"audit_logs": [
+            {"id": a.id, "user_id": a.user_id, "action": a.action,
+             "target_kind": a.target_kind, "target_value": a.target_value,
+             "detail": a.detail, "credits_delta": a.credits_delta,
+             "created_at": a.created_at.isoformat() if a.created_at else None}
+            for a in rows
+        ]}
+
+
+# ---------------------------------------------------------------------------
+# ЭТАП 7 P0: возврат кредита при 422. Списание происходит в зависимости
+# optional_paid_user (до валидации тела), поэтому битое тело раньше «съедало»
+# кредит (10->8 на два 422). Хендлер ловит RequestValidationError и делает
+# refund (+1, audit 'credit_refund'), если на юзере стоит флаг _vilka_charged
+# и запрос шёл на платную ручку. Идемпотентность — по jti токена.
+# ---------------------------------------------------------------------------
+_PAID_ROUTES = {"/api/enrich"}
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_refund_handler(request: Request, exc: RequestValidationError) -> Response:
+    body = {"detail": exc.errors()}
+    if _HAS_SAAS and request.url.path in _PAID_ROUTES:
+        auth_header = request.headers.get("authorization", "")
+        token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
+        if token:
+            try:
+                payload = auth.decode_token(token)
+                uid = int(payload.get("sub", 0))
+                jti = payload.get("jti", "")
+                refunded = await _refund_once(uid, jti)
+                if refunded:
+                    body["credit_refunded"] = True
+            except Exception:  # noqa: BLE001 — refund best-effort, 422 отдаём в любом случае
+                pass
+    return JSONResponse(status_code=422, content=body)
+
+
+async def _refund_once(user_id: int, jti: str) -> bool:
+    """Возврат ровно одного кредита за токен: атомарно удаляем строку used_tokens;
+    если её нет (уже возвращали / не списывали) — False."""
+    from models_sql import UsedToken
+    from sqlalchemy import delete as sa_delete
+    async for session in session_scope():
+        res = await session.execute(sa_delete(UsedToken).where(UsedToken.jti == jti))
+        if res.rowcount == 0:
+            return False
+        await session.execute(
+            sa_update(User).where(User.id == user_id).values(
+                credits_balance=User.credits_balance + 1
+            )
+        )
+        session.add(AuditLog(user_id=user_id, action="credit_refund",
+                             credits_delta=1, detail=f"422 refund jti={jti[:8]}"))
+        await session.commit()
+        return True
+
 
 @app.post("/api/enrich", response_model=EnrichResponse)
 async def api_enrich(
@@ -261,7 +364,8 @@ async def _send(ws: WebSocket, payload: dict[str, Any]) -> None:
     await ws.send_json(payload)
 
 
-async def _handle_enrich_message(ws: WebSocket, msg: dict[str, Any]) -> None:
+async def _handle_enrich_message(ws: WebSocket, msg: dict[str, Any],
+                                 user_id: Optional[int] = None) -> None:
     node_raw = msg.get("node") or msg.get("source_node") or {}
     try:
         src: Union[FactNode, SourceNodeLite] = (
@@ -289,6 +393,7 @@ async def _handle_enrich_message(ws: WebSocket, msg: dict[str, Any]) -> None:
         await _send(ws, {"status": "found", "node": n.model_dump(by_alias=True)})
     for lk in links:
         await _send(ws, {"status": "found", "link": lk.model_dump(by_alias=True)})
+    await _audit_enrich(user_id, src.kind.value, src.value, result.engine, len(nodes))
     await _send(
         ws,
         {"status": "done", "engine": result.engine, "took_ms": took_ms, "count": len(nodes)},
@@ -301,18 +406,23 @@ async def ws_enrich(ws: WebSocket) -> None:
     # При VILKA_AUTH_ENFORCED=1 токен ОБЯЗАТЕЛ (close 4401 без него); при =0 —
     # токен не требуем (демо/локалка), но если прислан — всё равно валидируем.
     token = ws.query_params.get("token") or ""
-    if AUTH_ENFORCED and _HAS_SAAS and not token:
+    # ЭТАП 7: флаг перечитываем динамически (AUTH_ENFORCED/VILKA_AUTH_ENFORCED),
+    # чтобы не зависеть от значения на момент импорта модуля.
+    enforced = auth._auth_enforced() if _HAS_SAAS else AUTH_ENFORCED  # noqa: SLF001
+    if enforced and _HAS_SAAS and not token:
         await ws.close(code=4401, reason="authorization required")
         return
     if token:
         try:
-            await auth.get_user_from_token(token)
+            user_ws, charged_ws = await auth.get_user_from_token(token)
         except HTTPException as exc:
             await ws.close(code=4401, reason=str(exc.detail)[:120])
             return
         except Exception:
             await ws.close(code=4401, reason="invalid token")
             return
+        # WS-пробивы списывают кредит так же, как HTTP; id юзера — для аудита.
+        ws_user_id: Optional[int] = user_ws.id if charged_ws else None
     await ws.accept()
     try:
         while True:

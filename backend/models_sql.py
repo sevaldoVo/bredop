@@ -74,6 +74,20 @@ class Invoice(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class UsedToken(Base):
+    """ЭТАП 7 P0: журнал использованных JWT (по уникальному jti).
+
+    Позволяет сделать списание кредита идемпотентным и даёт refund-хендлеру
+    строку, которую можно удалить при 422 (возврат баланса)."""
+
+    __tablename__ = "used_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Движок / сессии
 # ---------------------------------------------------------------------------
