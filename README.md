@@ -6,7 +6,7 @@ backend/            FastAPI-бэкенд OSINT-обогащения
   main.py           роуты: GET /api/health, POST /api/enrich, GET /api/kinds
   models.py         Pydantic-модели = зеркало types.ts (FactNode/FactLink)
   enrichment.py     сервисы пробива: live (crt.sh, Cloudflare DoH, ip-api) + mock-фолбэк
-frontend-patch/src/
+frontend/src/
   api.ts            enrichNode(node) — fetch-клиент к бэкенду
   Board.enrich.patch.tsx  патч Board.tsx: dblclick/кнопка, layout, анимация
 ```
@@ -26,8 +26,8 @@ curl -X POST http://localhost:8000/api/enrich \
 ```
 
 ## Фронтенд
-1. Скопировать `frontend-patch/src/api.ts` в `src/` проекта.
-2. В `Board.tsx` применить блоки [PATCH-1..4] из `Board.enrich.patch.tsx`.
+1. Фронтенд целиком лежит в `frontend/` (api.ts и все патчи PATCH-1..6 уже применены к Board.tsx).
+2. Сборка: `cd frontend && npm install && npm run build` (или через docker compose — см. ниже).
 3. `.env`: `VITE_VILKA_API=http://localhost:8000`
 
 ---
@@ -135,6 +135,6 @@ docker compose -f docker-compose.prod.yml exec nginx nginx -s reload
 `docker compose -f docker-compose.prod.yml exec backend alembic init migrations && alembic revision --autogenerate && alembic upgrade head`.
 
 ### Auth на фронте (ЭТАП 6)
-- `frontend-patch/src/useAuth.ts` — хук `useAuth()`: login/register/logout/checkout/refresh, JWT хранится в localStorage (`vilka_jwt`), клиентская проверка `exp`.
+- `frontend/src/useAuth.ts` — хук `useAuth()`: login/register/logout/checkout/refresh, JWT хранится в localStorage (`vilka_jwt`), клиентская проверка `exp`.
 - `src/api.ts`: все запросы (enrich/spider/path/export) автоматически несут `Authorization: Bearer`; WebSocket получает токен query-параметром `?token=` (бэк валидирует его и рвёт сессию кодом 4401 при мусорном токене).
 - Режим SaaS включён по умолчанию (`VILKA_AUTH_ENFORCED=1`): анонимный enrich → 401, пустой баланс → 402 Payment Required.
