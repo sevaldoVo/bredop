@@ -1,3 +1,1 @@
-__pycache__/
-*.pyc
-backend/data/*.db
+backend/data/vilka.db
