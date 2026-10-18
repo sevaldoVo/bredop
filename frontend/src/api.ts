@@ -221,17 +221,65 @@ export async function createCheckout(amountUsd: number): Promise<CheckoutResult>
 
 // ---------------------------------------------------------------------------
 // Конвертация доменной модели доски -> wire-формат бэкенда (models.py)
+//
+// P0 FIX (ЭТАП 6): backend/models.py живёт с extra="forbid". Доска хранит
+// расширенную FactNode (notes/tags/sources: SourceRef[]/updatedAt/pinned), а
+// связь — свободную метку relation/strength. Голый spread ноды в тело запроса
+// давал 422 extra_forbidden. Поэтому на границе — строгие мапперы:
+// отправляем РОВНО те поля, которые ждут FactNode/FactLink из models.py.
 // ---------------------------------------------------------------------------
 
-/** FactNode (доска) -> упрощённый wire-объект для POST /api/enrich. */
-export function toWire(n: FactNode): Record<string, unknown> {
+/** Маппинг русской UI-метки связи -> машинный LinkKind бэкенда. */
+const REL: Record<string, LinkKind> = {
+  владеет: 'owned_by',
+  принадлежит: 'belongs_to',
+  состоит: 'belongs_to',
+  проживает: 'located_in',
+  работает: 'works_at',
+  упоминается: 'mentioned_in',
+  слив: 'leaked_with',
+  резолвится: 'resolves_to',
+  хостится: 'hosted_at',
+  контакт: 'contact_of',
+};
+
+/** Нормализация kind связи: уже валидный kind -> как есть; метка -> через REL; иначе related_to. */
+function linkKindOf(l: FactLink): LinkKind {
+  if (l.kind) return l.kind;
+  const rel = (l.relation ?? '').trim().toLowerCase();
+  return REL[rel] ?? 'related_to';
+}
+
+/** Вес связи: явный weight бэкенда -> как есть; иначе из strength. */
+function linkWeightOf(l: FactLink): number {
+  if (typeof l.weight === 'number') return Math.min(1, Math.max(0, l.weight));
+  return l.strength === 'strong' ? 0.9 : l.strength === 'weak' ? 0.2 : 0.5;
+}
+
+/** Wire-нода FactNode (models.py): без notes/tags/updatedAt/pinned. */
+export interface WireFactNode {
+  id: string;
+  kind: NodeKind;
+  value: string;
+  label: string;
+  conf: number;
+  sources: string[];
+  meta: Record<string, unknown>;
+  x: number;
+  y: number;
+  createdAt: string;
+}
+
+/** FactNode (доска) -> wire-объект, принимаемый моделями бэкенда (extra="forbid"). */
+export function toWire(n: FactNode): WireFactNode {
   return {
     id: n.id,
     kind: n.kind,
     value: n.value ?? n.title,
-    title: n.title,
+    label: n.title,
     conf: n.conf,
-    sources: n.sources.map((s) => s.url ?? s.title),
+    // SourceRef[] -> string[]: сначала URL, иначе заголовок источника.
+    sources: (n.sources ?? []).map((s) => (typeof s === 'string' ? s : s.url || s.title || 'source')),
     meta: {},
     x: n.x,
     y: n.y,
@@ -239,15 +287,35 @@ export function toWire(n: FactNode): Record<string, unknown> {
   };
 }
 
+/** Wire-связь FactLink (models.py): from/to/kind/weight вместо relation/strength. */
+export interface WireFactLink {
+  id: string;
+  from: string;
+  to: string;
+  kind: LinkKind;
+  weight: number;
+  note: string | null;
+  createdAt: string;
+}
+
+/** FactLink (доска) -> wire-объект бэкенда. */
+export function toWireLink(l: FactLink): WireFactLink {
+  return {
+    id: l.id,
+    from: l.from,
+    to: l.to,
+    kind: linkKindOf(l),
+    weight: linkWeightOf(l),
+    note: l.note ?? null,
+    createdAt: new Date(l.createdAt).toISOString(),
+  };
+}
+
 /** Снимок доски -> wire-граф для /api/spider, /api/path, /api/export. */
-export function toWireGraph(g: { nodes: FactNode[]; links: FactLink[] }): { nodes: unknown[]; links: unknown[] } {
+export function toWireGraph(g: { nodes: FactNode[]; links: FactLink[] }): { nodes: WireFactNode[]; links: WireFactLink[] } {
   return {
     nodes: g.nodes.map(toWire),
-    links: g.links.map((l) => ({
-      id: l.id, from: l.from, to: l.to,
-      kind: l.kind ?? 'related_to', weight: l.weight ?? (l.strength === 'strong' ? 0.9 : l.strength === 'medium' ? 0.55 : 0.3),
-      note: l.note ?? null, createdAt: new Date(l.createdAt).toISOString(),
-    })),
+    links: g.links.map(toWireLink),
   };
 }
 
