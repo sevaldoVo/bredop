@@ -41,6 +41,31 @@ FREE_CREDITS_ON_REGISTER = int(os.getenv("VILKA_FREE_CREDITS", "10"))
 _bearer = HTTPBearer(auto_error=False)
 
 
+def _auth_enforced() -> bool:
+    """P0 FIX: динамический флаг (env читается на каждый запрос, а не при импорте)."""
+    return os.getenv("VILKA_AUTH_ENFORCED", "1") == "1"
+
+
+async def optional_paid_user(
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> User | None:
+    """Единый паттерн для ВСЕХ защищённых ручек (/api/enrich, POST /api/spider,
+    /api/path, WS /ws/enrich):
+      - AUTH_ENFORCED=0 -> всегда None (анонимный демо-режим, без 422/401);
+      - AUTH_ENFORCED=1 -> валидирует Bearer-JWT и списывает 1 кредит (401/402).
+    Никаких «голых» параметров user в сигнатурах хэндлеров."""
+    if not _auth_enforced():
+        return None
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Нужен Bearer-токен",
+                            headers={"WWW-Authenticate": "Bearer"})
+    user = await get_user_from_token(creds.credentials)
+    return await enforce_credit(user)
+
+
+EnrichUser = Annotated[User | None, Depends(optional_paid_user)]
+
+
 def _secret() -> str:
     global JWT_SECRET
     if not JWT_SECRET:
@@ -145,7 +170,11 @@ async def get_current_user(
 async def enforce_credit(
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    """Списывает 1 кредит АТОМАРНО. Кредитов нет -> 402 Payment Required."""
+    """P0 FIX (ЭТАП 5): AUTH_ENFORCED читается динамически — при VILKA_AUTH_ENFORCED=0
+    зависимость пропускает запрос без JWT и ничего не списывает (демо-режим)."""
+    if not _auth_enforced():
+        return user  # type: ignore[unreachable]
+
     async for session in session_scope():
         result = await session.execute(
             update(User)

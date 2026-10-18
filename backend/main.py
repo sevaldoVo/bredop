@@ -52,15 +52,18 @@ except ImportError:  # pragma: no cover — telethon не установлен
 # VILKA_AUTH_ENFORCED=0 бэкенд живёт как раньше (анонимный enrich).
 try:
     from models_sql import AuditLog, User, init_db, session_scope
+    import auth
     from auth import (
         LoginRequest,
         RegisterRequest,
         TokenResponse,
         MeResponse,
+        EnrichUser,
         enforce_credit,
         get_current_user,
         get_user_from_token,
         login_user,
+        optional_paid_user,
         register_user,
         whoami,
     )
@@ -69,6 +72,8 @@ try:
 except ImportError:  # pragma: no cover
     _HAS_SAAS = False
 
+# P0 FIX: флаг читается динамически в auth._auth_enforced() на каждый запрос —
+# здесь только для информации/логирования.
 AUTH_ENFORCED = os.getenv("VILKA_AUTH_ENFORCED", "1" if _HAS_SAAS else "0") == "1"
 
 SOURCE_PLACEHOLDER = "__SOURCE__"
@@ -156,13 +161,30 @@ def _finalize(result, source_id: str) -> tuple[list[FactNode], list[FactLink]]:
     return result.nodes, links
 
 
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# ЭТАП 5: SaaS-роуты (auth / billing). Роут enrich получает Depends(enforce_credit)
-# только когда AUTH_ENFORCED=1 и sqlalchemy установлен — иначе анонимный демо-режим.
-# ---------------------------------------------------------------------------
+async def _audit_enrich(user_id: Optional[int], kind: str, value: str,
+                        engine: str, found: int) -> None:
+    """ЭТАП 5: пишет каждый пробив в audit_logs (user_id=None в демо-режиме)."""
+    if not _HAS_SAAS:
+        return
+    try:
+        async for session in session_scope():
+            session.add(AuditLog(
+                user_id=user_id, action="enrich", credits_delta=0,
+                detail=f"{kind}={value[:64]} engine={engine} found={found}",
+            ))
+            await session.commit()
+    except Exception:  # noqa: BLE001 — аудит не должен ронять API
+        pass
 
-if _HAS_SAAS and AUTH_ENFORCED:
+
+# ---------------------------------------------------------------------------
+# ЭТАП 5: SaaS-роуты (auth / billing). P0 FIX: единая зависимость
+# optional_paid_user для всех защищённых ручек — при VILKA_AUTH_ENFORCED=0
+# она возвращает None (анонимный демо-режим), при =1 — JWT + списание кредита.
+# Никаких «голых» параметров user и условных Depends(...) if ... else None
+# (FastAPI трактовал такой параметр как обязательный query -> 422).
+# ---------------------------------------------------------------------------
+if _HAS_SAAS:
 
     @app.post("/api/register", response_model=TokenResponse)
     async def api_register(body: RegisterRequest) -> TokenResponse:
@@ -192,7 +214,7 @@ if _HAS_SAAS and AUTH_ENFORCED:
 @app.post("/api/enrich", response_model=EnrichResponse)
 async def api_enrich(
     req: EnrichRequest,
-    user: Annotated[Optional[User], Depends(enforce_credit)] if (_HAS_SAAS and AUTH_ENFORCED) else None,
+    user: EnrichUser,
 ) -> EnrichResponse:
     """Пробивает исходную ноду и возвращает новые ноды + связи.
 
@@ -274,10 +296,13 @@ async def _handle_enrich_message(ws: WebSocket, msg: dict[str, Any]) -> None:
 
 @app.websocket("/ws/enrich")
 async def ws_enrich(ws: WebSocket) -> None:
-    # ЭТАП 6: SaaS-вход. WS не умеет заголовки — JWT приходит query-параметром ?token=.
-    # Формат ответа на отказ: close(code=4401). Без токена сессия работает как раньше
-    # (демо/локалка), но боевые live-каналы ограничивает каскад в enrichment.py.
+    # ЭТАП 6 + P0 FIX: WS не умеет заголовки — JWT приходит query-параметром ?token=.
+    # При VILKA_AUTH_ENFORCED=1 токен ОБЯЗАТЕЛ (close 4401 без него); при =0 —
+    # токен не требуем (демо/локалка), но если прислан — всё равно валидируем.
     token = ws.query_params.get("token") or ""
+    if AUTH_ENFORCED and _HAS_SAAS and not token:
+        await ws.close(code=4401, reason="authorization required")
+        return
     if token:
         try:
             await auth.get_user_from_token(token)
