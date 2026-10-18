@@ -236,6 +236,15 @@ async def login_user(body: LoginRequest) -> TokenResponse:
                              credits_balance=user.credits_balance)
 
 
-async def whoami(user: Annotated[User, Depends(get_current_user)]) -> MeResponse:
+# P0 FIX (ЭТАП 6): аннотации НЕ должны быть строками. В модуле с
+# `from __future__ import annotations` FastAPI резолвит forward-ref только через
+# globals() функции — локальные импорты User/Depends там отсутствуют, и параметр
+# молча превращался в обязательный query (422 "query, user"). Поэтому все
+# зависимости-хелперы живут в auth.py (импортированы на уровне модуля), а main.py
+# использует их как значения (не строки).
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def whoami(user: CurrentUser) -> MeResponse:
     return MeResponse(id=user.id, email=user.email, role=user.role,
                       credits_balance=user.credits_balance)

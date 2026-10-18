@@ -59,6 +59,7 @@ try:
         TokenResponse,
         MeResponse,
         EnrichUser,
+        CurrentUser,
         enforce_credit,
         get_current_user,
         get_user_from_token,
@@ -195,13 +196,13 @@ if _HAS_SAAS:
         return await login_user(body)
 
     @app.get("/api/me", response_model=MeResponse)
-    async def api_me(user: Annotated[User, Depends(get_current_user)]) -> MeResponse:
+    async def api_me(user: CurrentUser) -> MeResponse:
         return await whoami(user)
 
     @app.post("/api/billing/checkout", response_model=CheckoutResponse)
     async def api_checkout(
         body: CheckoutRequest,
-        user: Annotated[User, Depends(get_current_user)],
+        user: CurrentUser,
     ) -> CheckoutResponse:
         return await create_checkout(user, body)
 
