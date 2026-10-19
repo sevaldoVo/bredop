@@ -10,7 +10,7 @@ import { Modal, KindPicker, Seg, relTime, fmtDateTime } from '../ui';
 // --- [PATCH-1] VILKA OSINT integration (STAGE 1..6): backend api client ----
 import {
   enrichNode, spiderRun, findPath, exportGraph, EnrichError,
-  apiNodeToFactNode, apiLinkToFactLink,
+  apiNodeToFactNode, apiLinkToFactLink, stampEngine,
   type ApiFactNode, type ApiFactLink, type SpiderEvent,
 } from '../api';
 
@@ -25,13 +25,17 @@ interface View { x: number; y: number; k: number }
 type Selection = { type: 'node'; id: string } | { type: 'link'; id: string } | null;
 
 export default function Board({
-  initial, onExit, user, onPaymentRequired,
+  initial, onExit, user, onPaymentRequired, onTopUp, onLogout,
 }: {
   initial: InvestigationCase;
   onExit: () => void;
   /** ЭТАП 6: текущий юзер (null = гость, enrichment работает в mock-режиме). */
   user?: import('../api').AuthUser | null;
   onPaymentRequired?: (u: import('../api').AuthUser) => void;
+  /** ЭТАП 7: «Пополнить» — крипто-инвойс через /api/billing/checkout. */
+  onTopUp?: () => void;
+  /** ЭТАП 7: «Выйти» — чистит JWT из localStorage. */
+  onLogout?: () => void;
 }) {
   const [c, setC] = useState<InvestigationCase>(initial);
   const cRef = useRef(c);
@@ -407,7 +411,8 @@ export default function Board({
       setEnrichingId(nodeId);
       try {
         const res = await enrichNode(node);
-        const applied = await applyApiResults(res.nodes, res.links);
+        // ЭТАП 7: проставляем движок каждой ноде — для бейджа «СИМУЛЯЦИЯ» при engine=mock.
+        const applied = await applyApiResults(res.nodes.map((n) => stampEngine(n, res.engine)), res.links);
         showToast(applied
           ? `Пробив ${KINDS[node.kind].short}: +${res.nodes.length} фактов (${res.engine})`
           : 'Новых фактов не найдено');
@@ -437,14 +442,18 @@ export default function Board({
         links: Object.values(cRef.current.links),
       };
       let found = 0;
+      // ЭТАП 7: движок последнего done-события — для бейджа «СИМУЛЯЦИЯ» на спайдер-нодах.
+      let lastEngine: 'mock' | 'live' = 'live';
       try {
         await spiderRun(graph, startNodeId, depth, async (ev: SpiderEvent) => {
           if (ev.status === 'found' && (ev.node || ev.link)) {
-            const nodes = ev.node ? [ev.node] : [];
+            const nodes = ev.node ? [stampEngine(ev.node, lastEngine)] : [];
             const links = ev.link ? [ev.link] : [];
             if (await applyApiResults(nodes, links)) found++;
           } else if (ev.status === 'enriching' && ev.value) {
             setHint(`Спайдер [${ev.depth}]: ${ev.value}`);
+          } else if (ev.status === 'done' || ev.status === 'spider_done') {
+            if (ev.engine) lastEngine = ev.engine;
           }
         });
         setHint(null);
@@ -609,9 +618,17 @@ export default function Board({
         </div>
         <div className="spacer" />
         <div className="chip mono">{stats.total} узлов · {stats.links} нитей</div>
-        {/* ЭТАП 6: баланс кредитов ВИЛКА */}
+        {/* ЭТАП 6/7: баланс кредитов + «Пополнить» + «Выйти» */}
         {user != null && (
-          <div className="chip mono" title={`вход: ${user.email}`}>⚡ {user.credits_balance} кр.</div>
+          <>
+            <div className="chip mono" title={`вход: ${user.email}`}>⚡ {user.credits_balance} кр.</div>
+            {onTopUp && (
+              <button className="btn small" onClick={onTopUp} title="Создать крипто-инвойс (+1000 кредитов)">💳 Пополнить</button>
+            )}
+            {onLogout && (
+              <button className="btn ghost small" onClick={onLogout} title="Выйти из аккаунта">Выйти</button>
+            )}
+          </>
         )}
         <button className="btn small" onClick={() => setCaseModal(true)}>Дело</button>
       </div>
@@ -669,6 +686,9 @@ export default function Board({
                 <div className="head">
                   <span className="glyph">{KINDS[n.kind].glyph}</span>
                   <span className="kind">{KINDS[n.kind].short}</span>
+                  {n.engine === 'mock' && (
+                    <span className="sim-badge" title="Данные сгенерированы мок-генератором, а не реальным источником">СИМУЛЯЦИЯ</span>
+                  )}
                 </div>
                 <div className="title">{n.title}</div>
                 {n.value && <div className="value">{n.value}</div>}

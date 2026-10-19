@@ -76,6 +76,8 @@ export interface FactNode {
   createdAt: number;
   updatedAt: number;
   pinned?: boolean;
+  /** ЭТАП 7: движок, выдавший факт (mock = симуляция, live = реальный источник). */
+  engine?: 'mock' | 'live';
 }
 
 /** Тип связи, зеркаляет backend/models.py LinkKind (ЭТАП 1+). */

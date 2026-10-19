@@ -59,6 +59,8 @@ export function apiNodeToFactNode(a: ApiFactNode): FactNode {
     y: a.y ?? 0,
     createdAt: Date.parse(a.createdAt) || now,
     updatedAt: now,
+    // ЭТАП 7: движок из meta.__engine (проставляет stampEngine на границе API).
+    engine: a.meta?.__engine === 'mock' || a.meta?.__engine === 'live' ? (a.meta.__engine as 'mock' | 'live') : undefined,
   };
 }
 
@@ -82,6 +84,11 @@ export interface EnrichResponse {
   links: ApiFactLink[];
   engine: 'mock' | 'live';
   took_ms: number;
+}
+
+/** Нода с проставленным движком (для бейджа «СИМУЛЯЦИЯ» на доске). */
+export function stampEngine(n: ApiFactNode, engine: 'mock' | 'live'): ApiFactNode {
+  return { ...n, meta: { ...(n.meta ?? {}), __engine: engine } };
 }
 
 /** Сообщения стрима WebSocket /ws/enrich (ЭТАП 2). */
@@ -422,7 +429,7 @@ export function enrichNodeStream(
 
 export interface SpiderEvent {
   status:
-    | 'spider_started' | 'enriching' | 'found' | 'skipped'
+    | 'spider_started' | 'enriching' | 'found' | 'skipped' | 'done'
     | 'spider_done' | 'spider_stopped' | 'error';
   run_id?: string;
   node?: ApiFactNode;
@@ -436,6 +443,8 @@ export interface SpiderEvent {
   expanded?: number;
   new_nodes?: number;
   skipped?: number;
+  /** ЭТАП 7: движок последнего enrich-цикла (для бейджа «СИМУЛЯЦИЯ»). */
+  engine?: 'mock' | 'live';
 }
 
 export interface PathResult {

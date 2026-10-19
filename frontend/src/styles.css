@@ -479,3 +479,32 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 
 /* кнопка tool в disabled-состоянии (спайдер во время раскрутки) */
 .tool:disabled { opacity: 0.45; cursor: progress; pointer-events: none; }
+
+/* ===== ЭТАП 7: Auth-UI (форма входа поверх доски) ===== */
+.auth-gate {
+  position: fixed; inset: 0; z-index: 999;
+  background: rgba(10, 8, 6, 0.72); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+}
+.auth-card {
+  width: min(360px, 92vw); padding: 28px 26px;
+  background: var(--paper, #14100c); border: 1px solid var(--brass, #d9a441);
+  border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,.55);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.auth-logo { font-weight: 800; font-size: 22px; letter-spacing: .18em; color: var(--brass, #d9a441); }
+.auth-sub { font-size: 12px; opacity: .7; margin-top: -8px; }
+.auth-card label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; opacity: .85; }
+.auth-card input {
+  padding: 9px 11px; border-radius: 8px; border: 1px solid rgba(217,164,65,.35);
+  background: rgba(0,0,0,.25); color: inherit; font: inherit; outline: none;
+}
+.auth-card input:focus { border-color: var(--brass, #d9a441); }
+.auth-error { color: #ff6b5e; font-size: 12px; }
+
+/* красный бейдж «СИМУЛЯЦИЯ» на моковых нодах */
+.sim-badge {
+  margin-left: auto; font-size: 9px; font-weight: 800; letter-spacing: .08em;
+  color: #fff; background: #c92a2a; border-radius: 4px; padding: 2px 6px;
+  text-transform: uppercase; box-shadow: 0 0 0 1px rgba(255,255,255,.15) inset;
+}

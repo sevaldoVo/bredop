@@ -6,6 +6,51 @@ import { useAuth } from './useAuth';
 import type { AuthUser } from './api';
 import type { InvestigationCase } from './types';
 
+/** ЭТАП 7: форма входа/регистрации поверх доски (когда JWT нет в localStorage). */
+function AuthGate({ auth }: { auth: ReturnType<typeof useAuth> }) {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || password.length < 6) return;
+    const ok = mode === 'login' ? await auth.login(email, password) : await auth.register(email, password);
+    if (!ok && auth.error) { /* ошибка уже в auth.error, покажем под формой */ }
+  };
+
+  return (
+    <div className="auth-gate" role="dialog" aria-modal="true">
+      <form className="auth-card" onSubmit={(e) => void submit(e)}>
+        <div className="auth-logo">ВИЛКА</div>
+        <div className="auth-sub">OSINT-платформа · {mode === 'login' ? 'вход' : 'регистрация'}</div>
+        <label>
+          Email
+          <input
+            type="email" autoComplete="email" placeholder="you@vilka.app"
+            value={email} onChange={(e) => setEmail(e.target.value)} required
+          />
+        </label>
+        <label>
+          Пароль
+          <input
+            type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            placeholder="мин. 8 символов" minLength={6}
+            value={password} onChange={(e) => setPassword(e.target.value)} required
+          />
+        </label>
+        {auth.error && <div className="auth-error">{String(auth.error).slice(0, 120)}</div>}
+        <button className="btn primary" type="submit" disabled={auth.isBusy}>
+          {auth.isBusy ? '…' : mode === 'login' ? 'Войти' : 'Создать аккаунт (+стартовые кредиты)'}
+        </button>
+        <button className="btn ghost small" type="button" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
+          {mode === 'login' ? 'Нет аккаунта? Регистрация' : 'Уже есть аккаунт? Вход'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
   const [route, setRoute] = useState<{ name: 'home' } | { name: 'board'; c: InvestigationCase }>({ name: 'home' });
   const toast = useToast();
@@ -22,8 +67,22 @@ export default function App() {
   }, [auth]);
 
   const handlePaymentRequired = (u: AuthUser) => {
-    toast.show(`Кредиты: ${u.credits_balance}. Пополните баланс в личном кабинете.`);
+    toast.show(`Кредиты: ${u.credits_balance}. Пополните баланс.`);
   };
+
+  /** ЭТАП 7: «Пополнить» — создаёт крипто-инвойс и открывает pay_url. */
+  const handleTopUp = async () => {
+    const res = await auth.checkout(25);
+    if (res?.pay_url) {
+      window.open(res.pay_url, '_blank', 'noopener');
+      toast.show(`Инвойс на ${res.credits} кредитов создан`);
+    } else {
+      toast.show(auth.error ? String(auth.error).slice(0, 90) : 'Не удалось создать инвойс');
+    }
+  };
+
+  // ЭТАП 7: нет JWT -> форма входа/регистрации поверх всего приложения.
+  const showAuthGate = !auth.isAuthed;
 
   return (
     <>
@@ -39,8 +98,11 @@ export default function App() {
           onExit={() => setRoute({ name: 'home' })}
           user={auth.user}
           onPaymentRequired={handlePaymentRequired}
+          onTopUp={() => void handleTopUp()}
+          onLogout={auth.logout}
         />
       )}
+      {showAuthGate && <AuthGate auth={auth} />}
       {toast.node}
     </>
   );
