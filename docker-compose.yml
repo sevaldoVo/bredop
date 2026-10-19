@@ -16,6 +16,11 @@ services:
       TELEGRAM_SESSION_NAME: /app/sessions/vilka
       VILKA_SPIDER_DELAY: ${VILKA_SPIDER_DELAY:-1.5}
       VILKA_SPIDER_MAX_NODES: ${VILKA_SPIDER_MAX_NODES:-50}
+      # Auth: поддерживаем оба имени флага (код читает VILKA_AUTH_ENFORCED, доки исторически — AUTH_ENFORCED)
+      VILKA_AUTH_ENFORCED: ${VILKA_AUTH_ENFORCED:-${AUTH_ENFORCED:-0}}
+      AUTH_ENFORCED: ${VILKA_AUTH_ENFORCED:-${AUTH_ENFORCED:-0}}
+      # JWT-секрет: без него токены умирают после рестарта контейнера
+      VILKA_JWT_SECRET: ${VILKA_JWT_SECRET:-}
     volumes:
       - ./data/breaches:/app/data/breaches
       - ./sessions:/app/sessions
