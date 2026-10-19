@@ -1,1 +1,7 @@
+__pycache__/
+*.pyc
+backend/data/
 frontend/dist/
+node_modules/
+.env
+sessions/
