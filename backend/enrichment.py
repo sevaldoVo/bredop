@@ -483,6 +483,21 @@ def _mock_image(value: str) -> EnrichResult:
 _FIRST_M = ["Александр", "Дмитрий", "Максим", "Сергей", "Андрей", "Игорь", "Никита"]
 _FIRST_F = ["Анна", "Мария", "Елена", "Ольга", "Наталья", "Екатерина", "Дарья"]
 _LAST = ["Иванов", "Петров", "Сидоров", "Кузнецов", "Соколов", "Морозов", "Волков", "Козлов"]
+# Отчества строго из одного гендерного набора с именем (см. _mock_fio):
+# мужское имя -> -ович/-евич, женское -> -овна/-евна. Никаких «Петров Дарья Сергеевич».
+_PATRON_M = ["Андреевич", "Сергеевич", "Игоревич", "Александрович", "Викторович"]
+_PATRON_F = ["Андреевна", "Сергеевна", "Игоревна", "Александровна", "Викторовна"]
+
+
+def _mock_fio(rng: random.Random) -> str:
+    """ФИО из СОГЛАСОВАННОГО гендерного набора: имя+фамилия+отчество одного пола."""
+    last = rng.choice(_LAST)
+    if rng.random() > 0.5:
+        first, patron = rng.choice(_FIRST_M), rng.choice(_PATRON_M)
+    else:
+        first, patron = rng.choice(_FIRST_F), rng.choice(_PATRON_F)
+        last = last + "а"  # женская форма фамилии: Иванов -> Иванова
+    return f"{last} {first} {patron}"
 _ORGS = ["ООО «Вектор»", "АО «ГлобалТрейд»", "ИП Смирнов А.В.", "ООО «НеоСистемы»", "ПАО «Руслинк»"]
 _TLDS = ["mail.ru", "gmail.com", "yandex.ru", "outlook.com", "proton.me"]
 _PLATFORMS = ["telegram", "instagram", "vk", "ok", "github"]
@@ -495,10 +510,11 @@ def _mock_phone(value: str) -> EnrichResult:
     res = EnrichResult(engine="mock")
 
     last = rng.choice(_LAST)
-    first = rng.choice(_FIRST_M if rng.random() > 0.5 else _FIRST_F)
-    patron = rng.choice(["Андреевич", "Сергеевич", "Игоревич", "Александрович", "Викторович"])
+    fio = _mock_fio(rng)
+    first = fio.split()[1]
+    patron = fio.split()[2]
     person = _node(
-        NodeKind.PERSON, f"{last} {first} {patron}",
+        NodeKind.PERSON, fio,
         label=f"{last} {first[0]}. {patron[0]}.",
         conf=rng.randint(1, 2),
         sources=["mock:GetContact-like", "mock:truecaller-like"],
@@ -548,8 +564,9 @@ def _mock_email(value: str) -> EnrichResult:
     rng = _seeded_rng(value)
     res = EnrichResult(engine="mock")
     domain = value.split("@")[-1]
+    fio_m = f"{rng.choice(_LAST)} {rng.choice(_FIRST_M)}"  # муж. фамилия + муж. имя — согласовано
     person = _node(
-        NodeKind.PERSON, f"{rng.choice(_LAST)} {rng.choice(_FIRST_M)}",
+        NodeKind.PERSON, fio_m,
         conf=1, sources=["mock:breach-corpus"],
     )
     phone = _node(
@@ -598,7 +615,8 @@ def _mock_handle(value: str) -> EnrichResult:
     cross = [_node(NodeKind.HANDLE, f"@{clean}_{p}", conf=1,
                    sources=["mock:name-similarity"], meta={"platform": p})
              for p in rng.sample(_PLATFORMS, 2)]
-    person = _node(NodeKind.PERSON, f"{rng.choice(_LAST)} {rng.choice(_FIRST_F)}",
+    fio_f = f"{rng.choice(_LAST)}а {rng.choice(_FIRST_F)}"  # жен. фамилия + жен. имя — согласовано
+    person = _node(NodeKind.PERSON, fio_f,
                    conf=1, sources=["mock:bio-parser"])
     res.nodes = [*cross, person]
     res.links = [
