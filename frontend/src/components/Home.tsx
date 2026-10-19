@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { emptyCase, newNode, STATUS_META, type InvestigationCase } from '../types';
 import { loadIndex, loadCase, saveCase, deleteCase, exportCases, importCases, type CaseMeta } from '../storage';
 import { Modal, useConfirm, relTime, fmtDate } from '../ui';
+import GraphDriftCanvas from './GraphDriftCanvas';
 
 const NODE_W = 208;
 const NODE_H = 96;
@@ -103,6 +104,9 @@ export default function Home({
       </div>
 
       <div className="home">
+        {/* ЭТАП 9: фон-режим — дрейфующий граф из 20 нод под крупным заголовком */}
+        <div className="home-hero-wrap">
+        <div className="halftone-layer"><GraphDriftCanvas /></div>
         <section className="hero">
           <h1>Доска расследований<br />для тех, кто ищет <em>следы</em>, а не лайки.</h1>
           <p className="lede">
@@ -115,6 +119,7 @@ export default function Home({
             <button className="btn" onClick={() => document.getElementById('cases')?.scrollIntoView({ behavior: 'smooth' })}>Открыть последнее</button>
           </div>
         </section>
+        </div>
 
         <section>
           <div className="section-title"><h2>Что внутри</h2><span className="rule" /><span className="stamp">только нужное</span></div>

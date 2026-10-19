@@ -3,6 +3,7 @@ import Home from './components/Home';
 import Board from './components/Board';
 import { useToast } from './ui';
 import { useAuth } from './useAuth';
+import HalftoneCanvas from './components/HalftoneCanvas';
 import type { AuthUser } from './api';
 import type { InvestigationCase } from './types';
 
@@ -21,6 +22,12 @@ function AuthGate({ auth }: { auth: ReturnType<typeof useAuth> }) {
 
   return (
     <div className="auth-gate" role="dialog" aria-modal="true">
+      {/* ЭТАП 9: сплит-экран — слева halftone-полотно + лого Unbounded 96px, справа форма */}
+      <div className="auth-left">
+        <div className="halftone-layer"><HalftoneCanvas /></div>
+        <div className="auth-wordmark">ВИЛКА</div>
+      </div>
+      <div className="auth-right">
       <form className="auth-card" onSubmit={(e) => void submit(e)}>
         <div className="auth-logo">ВИЛКА</div>
         <div className="auth-sub">OSINT-платформа · {mode === 'login' ? 'вход' : 'регистрация'}</div>
@@ -47,6 +54,7 @@ function AuthGate({ auth }: { auth: ReturnType<typeof useAuth> }) {
           {mode === 'login' ? 'Нет аккаунта? Регистрация' : 'Уже есть аккаунт? Вход'}
         </button>
       </form>
+      </div>
     </div>
   );
 }
