@@ -38,12 +38,26 @@ _PHONE_RE = re.compile(r"^\+?\d{7,15}$")
 _MAX_MESSAGES = 5  # по ТЗ: последние 5 сообщений
 
 
+def _env(*names: str) -> str:
+    """Первая непустая env-переменная из списка (БЛОК 3.2: fallback без VILKA_)."""
+    for n in names:
+        v = os.getenv(n, "").strip()
+        if v:
+            return v
+    return ""
+
+
 def is_enabled() -> bool:
-    """Telethon-канал активен? (флаг + ключи; сам telethon проверим лениво)."""
+    """Telethon-канал активен? (флаг + ключи; сам telethon проверим лениво).
+
+    БЛОК 3.2 (аудит GEMINI): поддерживаем и VILKA_TG_API_ID, и канонические
+    TELEGRAM_API_ID / TELEGRAM_API_HASH / TELEGRAM_SESSION_NAME без префикса —
+    чтобы не заставлять юзера гуглить название флага.
+    """
     return (
         os.getenv("VILKA_TELETHON_ENABLED", "").strip() == "1"
-        and bool(os.getenv("VILKA_TG_API_ID"))
-        and bool(os.getenv("VILKA_TG_API_HASH"))
+        and bool(_env("VILKA_TG_API_ID", "TELEGRAM_API_ID"))
+        and bool(_env("VILKA_TG_API_HASH", "TELEGRAM_API_HASH"))
     )
 
 
@@ -70,9 +84,9 @@ async def _get_client() -> Optional["TelegramClient"]:
             log.warning("telethon не установлен — MTProto-канал пропущен")
             return None
 
-        api_id = os.getenv("VILKA_TG_API_ID", "").strip()
-        api_hash = os.getenv("VILKA_TG_API_HASH", "").strip()
-        session = os.getenv("VILKA_TG_SESSION", "vilka_tg.session").strip()
+        api_id = _env("VILKA_TG_API_ID", "TELEGRAM_API_ID")
+        api_hash = _env("VILKA_TG_API_HASH", "TELEGRAM_API_HASH")
+        session = _env("VILKA_TG_SESSION", "TELEGRAM_SESSION_NAME") or "vilka_tg.session"
         try:
             client = TelegramClient(session, int(api_id), api_hash)
             await client.connect()
