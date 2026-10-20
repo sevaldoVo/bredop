@@ -19,8 +19,10 @@ env:
 from __future__ import annotations
 
 import base64
+import ipaddress
 import logging
 import re
+import socket
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -30,6 +32,44 @@ logger = logging.getLogger("vilka.image_search")
 
 _YA_URL = "https://yandex.ru/images/search"
 _TMPFILE_URL = "https://tmpfiles.org/api/v1/upload"
+
+# лимиты для base64-картинок: 11 МБ ДО декодирования, 8 МБ ПОСЛЕ
+MAX_B64_LEN = 11 * 1024 * 1024
+MAX_RAW_LEN = 8 * 1024 * 1024
+
+
+class SSRFError(ValueError):
+    """Запрошен URL/хост, указывающий на приватную сеть (loopback/RFC1918/
+    link-local incl. 169.254.169.254, multicast, reserved)."""
+
+
+def _validate_public_http_url(value: str) -> str:
+    """SSRF-guard: пропускаем только публичные http(s)-URLы.
+
+    Проверяем схему, хост (в т.ч. localhost/*.local/*.internal по имени) и
+    ВСЕ резолвы хоста: если хоть один адрес приватный — отказ. Так нельзя
+    обойти фильтр через DNS-алиас на 127.0.0.1 / метаданные облака.
+    """
+    p = urlparse((value or "").strip())
+    if p.scheme not in ("http", "https") or not p.hostname:
+        raise SSRFError("требуется полный публичный http(s)-URL")
+    host = p.hostname.strip("[]").lower()
+    if host == "localhost" or host.endswith((".local", ".internal")):
+        raise SSRFError(f"запрещённый хост {host}")
+    try:
+        ip_obj = ipaddress.ip_address(host)
+        addrs = [ip_obj]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror as exc:
+            raise SSRFError(f"не резолвится хост {host}") from exc
+        addrs = list({ipaddress.ip_address(i[4][0]) for i in infos})
+    for addr in addrs:
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_multicast or addr.is_reserved or addr.is_unspecified):
+            raise SSRFError(f"{host} указывает на {addr} — приватные адреса запрещены")
+    return value.strip()
 
 # ссылки на профили/соцсети, которые считаем «находками»
 _SOCIAL_RE = re.compile(
@@ -56,12 +96,24 @@ async def _upload_base64(client: httpx.AsyncClient, data_uri: str) -> Optional[s
     if not m:
         return None
     ext, b64 = m.group(1), m.group(2)
+    # лимит ДО декодирования (защита от CPU/RAM-DoS через гигантский base64)
+    if len(b64) > MAX_B64_LEN:
+        logger.info("base64 image too large (pre-decode): %d bytes", len(b64))
+        return None
     try:
         raw = base64.b64decode(b64)
     except Exception:  # noqa: BLE001
         return None
-    if len(raw) > 8 * 1024 * 1024:  # 8 MB ceiling
+    if len(raw) > MAX_RAW_LEN:  # 8 MB ceiling после decode
         return None
+    # SSRF-guard: URL tmpfiles валидируем так же, как и пользовательский
+    uploaded_page = await _upload_and_get_url(client, raw, ext)
+    if not uploaded_page:
+        return None
+    return _validate_public_http_url(uploaded_page)
+
+
+async def _upload_and_get_url(client: httpx.AsyncClient, raw: bytes, ext: str) -> Optional[str]:
     files = {"file": (f"query.{ext}", raw, f"image/{ext}")}
     resp = await client.post(_TMPFILE_URL, files=files, timeout=15.0)
     resp.raise_for_status()
@@ -88,6 +140,14 @@ async def reverse_image_search(value: str) -> list[dict]:
             if not uploaded:
                 return []
             img_url = uploaded
+        else:
+            # SSRF-guard перед отправкой URL в Яндекс (169.254.169.254, RFC1918,
+            # loopback, link-local, multicast — не даём бэку ходиться внутрь сети)
+            try:
+                img_url = _validate_public_http_url(img_url)
+            except SSRFError as exc:
+                logger.info("reverse-image SSRF blocked: %s", exc)
+                raise
 
         params = {"rpt": "imageview", "url": img_url}
         try:

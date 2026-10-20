@@ -388,6 +388,8 @@ async def api_enrich(
     t0 = time.perf_counter()
     try:
         result = await enrich(kind=src.kind, value=src.value)
+    except ValueError as exc:  # SSRFError — валидированный отказ (приватные адреса)
+        raise HTTPException(status_code=400, detail=f"SSRF guard: {exc}") from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"enrichment failed: {exc}") from exc
     took_ms = int((time.perf_counter() - t0) * 1000)
@@ -437,6 +439,9 @@ async def _handle_enrich_message(ws: WebSocket, msg: dict[str, Any],
     t0 = time.perf_counter()
     try:
         result = await enrich(kind=src.kind, value=src.value)
+    except ValueError as exc:  # SSRFError — валидированный отказ (приватные адреса)
+        await _send(ws, {"status": "error", "detail": f"SSRF guard: {exc}"})
+        return
     except Exception as exc:  # noqa: BLE001
         await _send(ws, {"status": "error", "detail": f"enrichment failed: {exc}"})
         return

@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
+import logging
 import os
 import random
 import re
@@ -28,6 +30,8 @@ from typing import Awaitable, Callable, Optional
 import httpx
 
 from models import EnrichResponse, FactLink, FactNode, LinkKind, NodeKind
+
+logger = logging.getLogger("vilka.enrichment")
 
 # ---------------------------------------------------------------------------
 # Утилиты
@@ -189,6 +193,16 @@ async def _live_domain(client: httpx.AsyncClient, domain: str) -> Optional[Enric
 # ---------------------------------------------------------------------------
 
 async def _live_ip(client: httpx.AsyncClient, ip: str) -> Optional[EnrichResult]:
+    # SSRF-guard: валидируем IP ДО подстановки в URL ip-api.com (приватные/
+    # loopback/link-local/multicast/reserved адреса не пробиваем наружу)
+    try:
+        ip_obj = ipaddress.ip_address(ip.strip())
+    except ValueError:
+        return None
+    if (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
+            or ip_obj.is_multicast or ip_obj.is_reserved or ip_obj.is_unspecified):
+        logger.info("ip-enrich skipped: %s is non-public address", ip)
+        return None
     try:
         r = await client.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,lat,lon,isp,org")
         data = r.json()
@@ -411,6 +425,14 @@ async def _live_image(client: httpx.AsyncClient, value: str) -> Optional[EnrichR
     """Картинка -> ACCOUNT/HANDLE (соцсети с профилями) + NOTE (страницы-источники)."""
     if os.getenv("VILKA_IMAGE_SEARCH", "1").strip() == "0":
         return None
+    # SSRF-guard ДО сетевых операций: приватные/loopback/link-local адреса — 400.
+    # data-URI (base64) здесь пропускаем — он валидируется после загрузки на tmpfiles.
+    from image_search import _validate_public_http_url, SSRFError as _SSRFE
+    if not value.strip().startswith("data:"):
+        try:
+            _validate_public_http_url(value)
+        except _SSRFE as exc:
+            raise ValueError(f"приватный/запрещённый URL запрещён: {exc}") from exc
     try:
         from image_search import reverse_image_search  # ленивый импорт
         hits = await reverse_image_search(value)
@@ -812,6 +834,8 @@ async def enrich(kind: NodeKind, value: str) -> EnrichResult:
         async with _new_client() as client:
             try:
                 result = await live(client, value)
+            except ValueError:  # SSRF-guard — валидированный отказ, пробрасываем наверх (HTTP 400)
+                raise
             except Exception:  # noqa: BLE001 — enrichment best-effort
                 result = None
         if result is not None:
