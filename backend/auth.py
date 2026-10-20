@@ -20,7 +20,7 @@ from typing import Annotated
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, update
@@ -72,19 +72,25 @@ async def refund_credit(user_id: int, amount: int = None) -> None:
 
 
 async def optional_paid_user(
+    request: Request,
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> User | None:
     """Единый паттерн для ВСЕХ защищённых ручек (/api/enrich, POST /api/spider,
     /api/path, WS /ws/enrich):
       - AUTH_ENFORCED=0 -> всегда None (анонимный демо-режим, без 422/401);
       - AUTH_ENFORCED=1 -> валидирует Bearer-JWT и списывает 1 кредит (401/402).
-    Никаких «голых» параметров user в сигнатурах хэндлеров."""
+    Никаких «голых» параметров user в сигнатурах хэндлеров.
+
+    БЛОК 2.2: идемпотентность списания — по charge_id запроса (middleware в
+    main.py кладёт uuid в request.state.charge_id), а НЕ по jti токена. Один
+    JWT теперь можно использовать многократно до истечения TTL."""
     if not _auth_enforced():
         return None
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Нужен Bearer-токен",
                             headers={"WWW-Authenticate": "Bearer"})
-    user, charged = await get_user_from_token(creds.credentials)
+    user, charged = await get_user_from_token(creds.credentials,
+                                              request_charge_id(request))
     if charged:
         # ЭТАП 7 P0: помечаем юзера «заряженным» — RequestValidationError-хендлер в
         # main.py вернёт кредит, если FastAPI завернёт тело запроса (422) ПОСЛЕ
@@ -188,31 +194,48 @@ async def load_user_from_token(token: str) -> User:
     return user
 
 
-async def get_user_from_token(token: str) -> tuple[User, bool]:
+async def get_user_from_token(token: str, charge_id: str | None = None) -> tuple[User, bool]:
     """Валидация JWT + загрузка юзера. Используется HTTP и WebSocket-входом.
 
-    Возвращает (user, charged): charged=True, если токен уже «потрачен» на этот
-    запрос (см. _charge_token) — это сигнал для refund-хендлера при 422."""
+    Возвращает (user, charged): charged=True, если кредит списан на этот запрос
+    (см. _charge_token; БЛОК 2.2 — ключ идемпотентности charge_id запроса) —
+    это сигнал для refund-хендлера при 422."""
     user = await load_user_from_token(token)
     async for session in session_scope():
-        charged = await _charge_token(session, token, user)
+        charged = await _charge_token(session, token, user, charge_id)
         break
     return user, charged
 
 
-async def _charge_token(session: AsyncSession, token: str, user: User) -> bool:
-    """ЭТАП 7 P0: атомарное списание кредита НА УРОВНЕ ТОКЕНА (уникальный jti).
+def request_charge_id(request: Request | None) -> str:
+    """БЛОК 2.2 (аудит GEMINI): идемпотентность списания ПО ЗАПРОСУ, а не по jti.
 
-    Ключевое отличие от старой схемы: UPDATE по таблице used_tokens с UNIQUE(jti)
-    происходит ДО валидации тела запроса, но идемпотентен по jti — повторная
-    отправка того же токена не спишет второй кредит. Если тело потом не пройдёт
-    валидацию (422), RequestValidationError-хендлер в main.py сделает refund
-    (DELETE строки + возврат баланса), и баланс останется нетронутым.
+    Старая схема (charge по jti) делала токен одноразовым: клиент падал бы на
+    402 "Токен уже использован" на втором же enrich/spider/path/export подряд.
+    Правильный ключ — уникальный id HTTP-запроса: middleware кладёт его в
+    request.state.charge_id; для WS/фоновых вызовов генерируем uuid на месте.
+    Повторная обработка того же запроса (например, refund-хендлер после 422)
+    идемпотентна, а разные запросы одним токеном списывают каждый свой кредит.
+    """
+    rid = getattr(request.state, "charge_id", None) if request is not None else None
+    return f"req:{rid}" if rid else f"req:{uuid.uuid4().hex}"
+
+
+async def _charge_token(session: AsyncSession, token: str, user: User,
+                        charge_id: str | None = None) -> bool:
+    """ЭТАП 7 P0 + БЛОК 2.2: атомарное списание кредита на уровне ЗАПРОСА.
+
+    Ключ таблицы used_tokens — charge_id (id HTTP-запроса), а не jti токена:
+    один JWT живёт до истечения TTL и платит по кредиту за каждый запрос.
+    Если тело потом не пройдёт валидацию (422), RequestValidationError-хендлер
+    в main.py сделает refund (DELETE строки по тому же charge_id + возврат
+    баланса), и баланс останется нетронутым.
     """
     if not _auth_enforced():
         return False
     payload = decode_token(token)
     jti = payload.get("jti", "")
+    key = charge_id or f"req:{jti}"
     try:
         from models_sql import UsedToken  # noqa: WPS433
     except ImportError:
@@ -236,16 +259,14 @@ async def _charge_token(session: AsyncSession, token: str, user: User) -> bool:
 
     from sqlalchemy.exc import IntegrityError
     try:
-        session.add(UsedToken(jti=jti, user_id=user.id))
+        # БЛОК 2.2: ключ идемпотентности — charge_id ЗАПРОСА (col jti), не jti токена.
+        session.add(UsedToken(jti=key, user_id=user.id))
         await session.flush()
     except IntegrityError:
         await session.rollback()
-        # Токен уже был использован ранее — НЕ списываем повторно; считаем,
-        # что кредит уже потрачен на тот первый запрос (charged=False => refund не нужен).
-        raise HTTPException(
-            status.HTTP_402_PAYMENT_REQUIRED,
-            "Токен уже использован. Получите новый (login) или пополните баланс.",
-        ) from None
+        # Тот же самый запрос обрабатывается повторно (например, refund-хендлер) —
+        # второй раз НЕ списываем; charged=False => refund не нужен.
+        return False
     result = await session.execute(
         update(User)
         .where(User.id == user.id, User.credits_balance >= ENRICH_COST)

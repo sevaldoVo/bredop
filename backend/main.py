@@ -106,8 +106,21 @@ app.add_middleware(
     allow_origins=_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    # БЛОК 3.3 (аудит GEMINI): без Authorization в allow_headers браузерный
+    # CORS-preflight убивает все JWT-запросы с фронтенда на прод-домене.
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def _charge_id_middleware(request: Request, call_next):
+    """БЛОК 2.2: каждому HTTP-запросу — уникальный charge_id.
+
+    Зависимость optional_paid_user идемпотентно списывает кредит по этому id
+    (а не по jti токена), поэтому один JWT можно использовать многократно,
+    а refund при 422 остаётся точным (ровно за этот запрос)."""
+    request.state.charge_id = uuid.uuid4().hex
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -286,8 +299,11 @@ async def _validation_refund_handler(request: Request, exc: RequestValidationErr
             try:
                 payload = auth.decode_token(token)
                 uid = int(payload.get("sub", 0))
-                jti = payload.get("jti", "")
-                refunded = await _refund_once(uid, jti)
+                # БЛОК 2.2: refund ровно за ЭТОТ запрос — по charge_id из
+                # middleware (строка used_tokens с ключом "req:<charge_id>").
+                cid = getattr(request.state, "charge_id", None)
+                key = f"req:{cid}" if cid else ""
+                refunded = await _refund_once(uid, key) if key else False
                 if refunded:
                     body["credit_refunded"] = True
             except Exception:  # noqa: BLE001 — refund best-effort, 422 отдаём в любом случае
@@ -405,13 +421,21 @@ async def ws_enrich(ws: WebSocket) -> None:
     # ЭТАП 6 + P0 FIX: WS не умеет заголовки — JWT приходит query-параметром ?token=.
     # При VILKA_AUTH_ENFORCED=1 токен ОБЯЗАТЕЛ (close 4401 без него); при =0 —
     # токен не требуем (демо/локалка), но если прислан — всё равно валидируем.
-    token = ws.query_params.get("token") or ""
+    # БЛОК 2.5 (аудит GEMINI): браузер не умеет заголовки на WS — фронт шлёт
+    # токен субпротоколом new WebSocket(url, ["bearer", token]); фолбэк ?token=.
+    token = ""
+    for sub in ws.scope.get("subprotocols", []):
+        if sub and sub != "bearer":
+            token = sub
+    if not token:
+        token = ws.query_params.get("token") or ""
     # ЭТАП 7: флаг перечитываем динамически (AUTH_ENFORCED/VILKA_AUTH_ENFORCED),
     # чтобы не зависеть от значения на момент импорта модуля.
     enforced = auth._auth_enforced() if _HAS_SAAS else AUTH_ENFORCED  # noqa: SLF001
     if enforced and _HAS_SAAS and not token:
         await ws.close(code=4401, reason="authorization required")
         return
+    user_ws = None
     if token:
         try:
             user_ws, charged_ws = await auth.get_user_from_token(token)
@@ -424,6 +448,9 @@ async def ws_enrich(ws: WebSocket) -> None:
         # WS-пробивы списывают кредит так же, как HTTP; id юзера — для аудита.
         ws_user_id: Optional[int] = user_ws.id if charged_ws else None
     await ws.accept()
+    # БЛОК 2.1 (аудит GEMINI): состояние соединения для пер-запросного списания.
+    ws.state_user = user_ws if (token and _HAS_SAAS) else None  # type: ignore[attr-defined]
+    ws.state_uid = user_ws.id if (token and _HAS_SAAS) else None  # type: ignore[attr-defined]
     try:
         while True:
             raw = await ws.receive_text()
@@ -436,12 +463,34 @@ async def ws_enrich(ws: WebSocket) -> None:
                 await _send(ws, {"status": "error", "detail": "expected JSON object"})
                 continue
             action = msg.get("action")
-            if action == "enrich":
-                await _handle_enrich_message(ws, msg)
+            if action in ("enrich", "spider"):
+                # БЛОК 2.1: кредит списывается атомарно НА КАЖДЫЙ enrich/spider
+                # внутри live-соединения (ключ идемпотентности — uuid сообщения),
+                # а не один раз на handshake. Без токена/в демо — бесплатно.
+                uid = None
+                if _HAS_SAAS and auth._auth_enforced():  # noqa: SLF001
+                    if getattr(ws, "state_user", None) is None:
+                        await _send(ws, {"status": "error", "detail": "authorization required"})
+                        continue
+                    tok = token
+                    cid = f"ws:{uuid.uuid4().hex}"
+                    try:
+                        u2, charged2 = await auth.get_user_from_token(tok, cid)
+                        ws.state_user = u2
+                    except HTTPException as exc:
+                        await _send(ws, {"status": "error", "detail": str(exc.detail)})
+                        continue
+                    if not charged2:
+                        await _send(ws, {"status": "error", "detail": "credit charge failed"})
+                        continue
+                    uid = u2.id
+                uid = uid or getattr(ws, "state_uid", None)
+                if action == "enrich":
+                    await _handle_enrich_message(ws, msg, uid)
+                else:
+                    await _handle_spider_message(ws, msg, uid)
             elif action == "ping":
                 await _send(ws, {"status": "pong"})
-            elif action == "spider":
-                await _handle_spider_message(ws, msg)
             else:
                 await _send(ws, {"status": "error", "detail": f"unknown action: {action!r}"})
     except WebSocketDisconnect:
@@ -458,7 +507,8 @@ async def ws_enrich(ws: WebSocket) -> None:
 # Сервер стримит spider_started / enriching / found(node|link) / skipped /
 # spider_done. Фоновая задача — asyncio.create_task; при дисконнекте — cancel.
 
-async def _handle_spider_message(ws: WebSocket, msg: dict[str, Any]) -> None:
+async def _handle_spider_message(ws: WebSocket, msg: dict[str, Any],
+                                 user_id: Optional[int] = None) -> None:
     graph_raw = msg.get("graph") or {}
     try:
         nodes = [FactNode.model_validate(n) for n in graph_raw.get("nodes", [])]
