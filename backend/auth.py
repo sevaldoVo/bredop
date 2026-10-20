@@ -132,6 +132,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     credits_balance: int
+    role: str = "user"
 
 
 class MeResponse(BaseModel):
@@ -353,7 +354,7 @@ async def register_user(body: RegisterRequest) -> TokenResponse:
         await session.commit()
         token, ttl = create_token(user)
         return TokenResponse(access_token=token, expires_in=ttl,
-                             credits_balance=user.credits_balance)
+                             credits_balance=user.credits_balance, role=user.role)
 
 
 async def login_user(body: LoginRequest) -> TokenResponse:
@@ -368,7 +369,7 @@ async def login_user(body: LoginRequest) -> TokenResponse:
         await session.commit()
         token, ttl = create_token(user)
         return TokenResponse(access_token=token, expires_in=ttl,
-                             credits_balance=user.credits_balance)
+                             credits_balance=user.credits_balance, role=user.role)
 
 
 # P0 FIX (ЭТАП 6): аннотации НЕ должны быть строками. В модуле с

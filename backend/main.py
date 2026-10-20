@@ -176,15 +176,21 @@ async def _startup_breaches() -> None:
 async def _startup_saas_db() -> None:
     """ЭТАП 5: создаём таблицы users/audit_logs/invoices (create_all идемпотентен).
 
-    Если VILKA_ADMIN_EMAIL задан — автоматически создаём/апгрейдим первого админа
-    с паролем из VILKA_ADMIN_PASSWORD (см. README, раздел DEPLOY).
+    БЛОК 3/коммит 3 (аудит GEMINI): если VILKA_ADMIN_EMAIL + валидный
+    VILKA_ADMIN_PASSWORD заданы — при КАЖДОМ старте создаём админа либо
+    ПЕРЕЗАПИСЫВАЕМ hashed_password существующего юзера с таким email
+    (защита от захвата роли через регистрацию до старта). Дефолтные пароли
+    ("change-me", "change-me-first-login") игнорируются полностью: админ не
+    создаётся и не обновляется (защита от дефолтного пароля в проде).
     """
     if not _HAS_SAAS:
         return
     try:
         await init_db()
         admin_email = os.getenv("VILKA_ADMIN_EMAIL", "").strip().lower()
-        if admin_email:
+        admin_password = os.getenv("VILKA_ADMIN_PASSWORD", "")
+        _DEFAULT_PW = ("change-me", "change-me-first-login")
+        if admin_email and admin_password and admin_password not in _DEFAULT_PW:
             from auth import hash_password
             async for session in session_scope():
                 from sqlalchemy import select
@@ -193,14 +199,20 @@ async def _startup_saas_db() -> None:
                 )).scalar_one_or_none()
                 if u is None:
                     u = User(email=admin_email,
-                             hashed_password=hash_password(os.getenv("VILKA_ADMIN_PASSWORD", "change-me")),
+                             hashed_password=hash_password(admin_password),
                              credits_balance=int(os.getenv("VILKA_ADMIN_CREDITS", "100000")),
                              role="admin")
                     session.add(u)
+                    print(f"[vilka] admin created: {admin_email}")
                 else:
+                    # принудительный сброс пароля админа на каждый старт
                     u.role = "admin"
+                    u.hashed_password = hash_password(admin_password)
+                    print(f"[vilka] admin password reset on startup: {admin_email}")
                 await session.commit()
-            print(f"[vilka] admin user ready: {admin_email}")
+        elif admin_email:
+            print("[vilka] ADMIN INIT SKIPPED: VILKA_ADMIN_PASSWORD пустой или дефолтный "
+                  "(запрещено в проде)")
     except Exception as exc:  # noqa: BLE001 — БД не должна ронять API
         print(f"[vilka] SaaS DB init skipped: {exc}")
 
