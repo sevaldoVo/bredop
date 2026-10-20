@@ -490,7 +490,13 @@ async def ws_enrich(ws: WebSocket) -> None:
             return
         # WS-пробивы списывают кредит так же, как HTTP; id юзера — для аудита.
         ws_user_id: Optional[int] = user_ws.id if charged_ws else None
-    await ws.accept()
+    # БЛОК 2.5 фикс handshake: если клиент прислал субпротоколы ["bearer", <jwt>]
+    # (два элемента), обязательно эхо-подтверждаем "bearer" в accept — иначе
+    # браузер/клиент сам закрывает соединение (протокол не согласован) до того,
+    # как мы успеем что-либо отправить. Одиночный субпротокол / его отсутствие —
+    # accept без subprotocol (как раньше).
+    _scope_subs = ws.scope.get("subprotocols", []) or []
+    await ws.accept(subprotocol="bearer" if len(_scope_subs) == 2 and _scope_subs[0].lower() == "bearer" else None)
     # БЛОК 2.1 (аудит GEMINI): состояние соединения для пер-запросного списания.
     ws.state_user = user_ws if (token and _HAS_SAAS) else None  # type: ignore[attr-defined]
     ws.state_uid = user_ws.id if (token and _HAS_SAAS) else None  # type: ignore[attr-defined]
