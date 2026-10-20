@@ -273,7 +273,7 @@ if _HAS_SAAS:
 # refund (+1, audit 'credit_refund'), если на юзере стоит флаг _vilka_charged
 # и запрос шёл на платную ручку. Идемпотентность — по jti токена.
 # ---------------------------------------------------------------------------
-_PAID_ROUTES = {"/api/enrich"}
+_PAID_ROUTES = {"/api/enrich", "/api/spider", "/api/path", "/api/export"}
 
 
 @app.exception_handler(RequestValidationError)
@@ -511,6 +511,14 @@ class JobInfo(BaseModel):
 
 _jobs: dict[str, JobInfo] = {}
 _job_results: dict[str, EnrichResponse] = {}
+# Аудит P0 (БЛОК 1.5): владелец job_id -> user.id. В демо-режиме (без JWT) id=None.
+_job_owners: dict[str, Optional[int]] = {}
+
+
+def _check_job_owner(job_id: str, user: Optional[User]) -> None:
+    owner = _job_owners.get(job_id)
+    if AUTH_ENFORCED and (owner is None or owner != getattr(user, "id", None)):
+        raise HTTPException(status_code=404, detail="job not found")
 
 
 async def _run_spider_job(job_id: str, nodes: list[FactNode], start_id: str, depth: int) -> None:
@@ -547,23 +555,29 @@ async def _run_spider_job(job_id: str, nodes: list[FactNode], start_id: str, dep
 
 
 @app.post("/api/spider", status_code=202)
-async def api_spider(req: SpiderRequest) -> dict[str, str]:
+async def api_spider(req: SpiderRequest, user: EnrichUser) -> dict[str, str]:
     """Запускает рекурсивную раскрутку фоновой задачей.
+
+    ЭТАП 9 аудит (БЛОК 1.3): ручка защищена — при AUTH_ENFORCED=1 требует JWT и
+    списывает 1 кредит; job привязывается к владельцу (_job_owners).
 
     Живой стрим прогресса — через WS `/ws/enrich` (action:"spider");
     поллинг результата для HTTP-клиентов — GET /api/spider/{job_id}.
     """
     job_id = f"job_{uuid.uuid4().hex[:10]}"
     _jobs[job_id] = JobInfo(job_id=job_id, status="queued")
+    _job_owners[job_id] = getattr(user, "id", None) if user is not None else None
     asyncio.create_task(_run_spider_job(job_id, req.graph.nodes, req.start_node_id, req.depth))
     return {"job_id": job_id, "status": "queued"}
 
 
 @app.get("/api/spider/{job_id}")
-async def api_spider_status(job_id: str) -> dict[str, Any]:
+async def api_spider_status(job_id: str, user: EnrichUser) -> dict[str, Any]:
     info = _jobs.get(job_id)
     if info is None:
         raise HTTPException(status_code=404, detail="job not found")
+    # БЛОК 1.5: чужой job_id не отдаём (404 вместо 403 — не светуем существование)
+    _check_job_owner(job_id, user)
     out: dict[str, Any] = info.model_dump()
     if info.status == "done" and job_id in _job_results:
         out["result"] = _job_results[job_id].model_dump(by_alias=True)
@@ -574,7 +588,13 @@ async def api_spider_status(job_id: str) -> dict[str, Any]:
 # ЭТАП 3: аналитика графа — кратчайший путь между двумя нодами (networkx)
 # ---------------------------------------------------------------------------
 
-_server_graph: dict[str, tuple[list[FactNode], list[FactLink]]] = {}
+# Аудит P0 (БЛОК 1.4): снимок доски привязан к владельцу. Ключ — user.id, в
+# демо-режиме (AUTH_ENFORCED=0 / без JWT) — sentinel 0. Чужой граф не виден.
+_server_graph: dict[int, tuple[list[FactNode], list[FactLink]]] = {}
+
+
+def _graph_key(user: Optional[User]) -> int:
+    return getattr(user, "id", None) or 0
 
 
 def _shortest_path(nodes: list[FactNode], links: list[FactLink],
@@ -611,9 +631,12 @@ def _shortest_path(nodes: list[FactNode], links: list[FactLink],
 
 
 @app.get("/api/path")
-async def api_path(from_id: str, to_id: str) -> dict[str, Any]:
-    """Кратчайший путь по серверному снимку доски (последний POST /api/path)."""
-    graph = _server_graph.get("current")
+async def api_path(from_id: str, to_id: str, user: EnrichUser) -> dict[str, Any]:
+    """Кратчайший путь по серверному снимку доски (последний POST /api/path).
+
+    БЛОК 1.3/1.4: снимок хранится per-user — чужой граф через эту ручку не достать.
+    """
+    graph = _server_graph.get(_graph_key(user))
     if graph is None:
         raise HTTPException(status_code=404,
                             detail="no server-side graph; POST your board to /api/path")
@@ -621,10 +644,11 @@ async def api_path(from_id: str, to_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/path")
-async def api_path_body(body: GraphSnapshot, from_id: str, to_id: str) -> dict[str, Any]:
+async def api_path_body(body: GraphSnapshot, from_id: str, to_id: str,
+                        user: EnrichUser) -> dict[str, Any]:
     """Поиск пути, где граф приходит в теле (фронт шлёт свой снимок).
-    Заодно кеширует снимок как серверное состояние для GET-варианта."""
-    _server_graph["current"] = (body.nodes, body.links)
+    Заодно кеширует снимок как серверное состояние для GET-варианта (per-user)."""
+    _server_graph[_graph_key(user)] = (body.nodes, body.links)
     return _shortest_path(body.nodes, body.links, from_id, to_id)
 
 
@@ -690,11 +714,14 @@ def _graphml(nodes: list[FactNode], links: list[FactLink]) -> str:
 
 
 @app.post("/api/export")
-async def api_export_post(body: GraphSnapshot, format: str = "graphml") -> Any:
-    """Экспорт снимка доски (фронт присылает свой граф). Формат: graphml."""
+async def api_export_post(body: GraphSnapshot, user: EnrichUser,
+                          format: str = "graphml") -> Any:
+    """Экспорт снимка доски (фронт присылает свой граф). Формат: graphml.
+
+    БЛОК 1.3/1.4: ручка под auth-зависимостью; серверный кеш — per-user."""
     if format != "graphml":
         raise HTTPException(status_code=400, detail="supported formats: graphml")
-    _server_graph["current"] = (body.nodes, body.links)  # заодно обновим серверный кеш
+    _server_graph[_graph_key(user)] = (body.nodes, body.links)  # заодно обновим серверный кеш
     xml = _graphml(body.nodes, body.links)
     return Response(
         content=xml,
@@ -704,14 +731,15 @@ async def api_export_post(body: GraphSnapshot, format: str = "graphml") -> Any:
 
 
 @app.get("/api/export")
-async def api_export(format: str = "graphml") -> Any:
+async def api_export(user: EnrichUser, format: str = "graphml") -> Any:
     """Экспорт серверного снимка (последний POST /api/path или /api/export).
 
     Пример: GET /api/export?format=graphml -> vilka-board.graphml (Maltego/Gephi).
+    БЛОК 1.3/1.4: отдаёт только снимок текущего пользователя (или демо-слот 0).
     """
     if format != "graphml":
         raise HTTPException(status_code=400, detail="supported formats: graphml")
-    graph = _server_graph.get("current")
+    graph = _server_graph.get(_graph_key(user))
     if graph is None:
         raise HTTPException(status_code=404,
                             detail="no server-side graph; POST your board to /api/export")

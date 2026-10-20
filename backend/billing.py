@@ -37,8 +37,13 @@ from models_sql import AuditLog, Invoice, User, session_scope
 log = logging.getLogger("vilka.billing")
 
 PAYMENTS_URL = os.getenv("VILKA_PAYMENTS_URL", "https://api.nowpayments.io/v1")
-NP_API_KEY = os.getenv("VILKA_NP_API_KEY", "")
-NP_WEBHOOK_SECRET = os.getenv("VILKA_NP_WEBHOOK_SECRET", "")
+# Аудит P0 (БЛОК 1): поддерживаем и фирменные VILKA_*, и стандартные имена
+# NOWPayments (NOWPAYMENTS_API_KEY / NOWPAYMENTS_IPN_SECRET), чтобы прод-секреты
+# из панелей хостинга подхватывались без правки кода.
+NP_API_KEY = os.getenv("VILKA_NP_API_KEY") or os.getenv("NOWPAYMENTS_API_KEY", "")
+NP_WEBHOOK_SECRET = (
+    os.getenv("VILKA_NP_WEBHOOK_SECRET") or os.getenv("NOWPAYMENTS_IPN_SECRET", "")
+)
 TOPUP_CREDITS = int(os.getenv("VILKA_TOPUP_CREDITS", "1000"))
 PRICE_USD = float(os.getenv("VILKA_TOPUP_PRICE_USD", "49"))
 
@@ -109,8 +114,6 @@ async def create_checkout(user: User, body: CheckoutRequest) -> CheckoutResponse
 
 def _verify_nowpayments_signature(request_body: bytes, digest_header: str) -> bool:
     """NOWPayments: HMAC-SHA512 от сырого тела, hex-строка в X-API-HMAC-SHA512-Digest."""
-    if not NP_WEBHOOK_SECRET:
-        return True  # секрет не настроен (dev/мок) — пропускаем, но предупредим
     expected = hmac.new(NP_WEBHOOK_SECRET.encode(), request_body, hashlib.sha512).hexdigest()
     return hmac.compare_digest(expected, digest_header)
 
@@ -118,7 +121,15 @@ def _verify_nowpayments_signature(request_body: bytes, digest_header: str) -> bo
 async def handle_crypto_webhook(request: Request) -> WebhookAck:
     raw = await request.body()
     digest = request.headers.get("X-API-HMAC-SHA512-Digest", "")
-    if NP_WEBHOOK_SECRET and not _verify_nowpayments_signature(raw, digest):
+    # Аудит P0 (БЛОК 1.1) fail-closed: без настроенного секрета вебхук запрещён.
+    # Начисление кредитов по неподписанному запросу = бесплатная оплата из воздуха.
+    if not NP_WEBHOOK_SECRET:
+        log.error("[billing] webhook rejected: секрет подписи не настроен (fail-closed)")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Webhook disabled: задайте VILKA_NP_WEBHOOK_SECRET / NOWPAYMENTS_IPN_SECRET",
+        )
+    if not _verify_nowpayments_signature(raw, digest):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Битая подпись вебхука")
 
     try:
@@ -136,8 +147,10 @@ async def handle_crypto_webhook(request: Request) -> WebhookAck:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Нет invoice_id/payment_id")
 
     async for session in session_scope():
+        # Аудит P0 (БЛОК 1.2): SELECT ... FOR UPDATE — блокируем строку инвойса,
+        # чтобы два параллельных вебхука (ретраи процессинга) не начислили кредиты дважды.
         inv = (await session.execute(
-            select(Invoice).where(Invoice.invoice_id == invoice_id)
+            select(Invoice).where(Invoice.invoice_id == invoice_id).with_for_update()
         )).scalar_one_or_none()
         if inv is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Инвойс {invoice_id} не найден")
@@ -151,7 +164,17 @@ async def handle_crypto_webhook(request: Request) -> WebhookAck:
         user = await session.get(User, inv.user_id)
         if user is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Юзер инвойса пропал")
-        user.credits_balance += inv.credits
+
+        # Аудит P0 (БЛОК 1.2): атомарный UPDATE вместо read-modify-write в ORM-объекте —
+        # конкурентное списание кредита (enforce_credit) не потеряет начисление.
+        from sqlalchemy import update as sa_update
+        res = await session.execute(
+            sa_update(User)
+            .where(User.id == user.id)
+            .values(credits_balance=User.credits_balance + inv.credits)
+        )
+        if res.rowcount != 1:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Юзер инвойса пропал (UPDATE)")
         inv.status = "paid"
         inv.paid_at = datetime.now(timezone.utc)
         session.add(AuditLog(user_id=user.id, action="credit_topup",
