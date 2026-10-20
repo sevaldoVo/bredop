@@ -120,7 +120,45 @@ async def _charge_id_middleware(request: Request, call_next):
     (а не по jti токена), поэтому один JWT можно использовать многократно,
     а refund при 422 остаётся точным (ровно за этот запрос)."""
     request.state.charge_id = uuid.uuid4().hex
+    # БЛОК 2.4 (аудит GEMINI): rate-limit чувствительных ручек по IP.
+    limit = _RATE_LIMITS.get((request.method, request.url.path))
+    if limit is not None:
+        allowed = _rate_allow(
+            f"{request.client.host if request.client else 'unknown'}:{request.url.path}",
+            limit[0], limit[1],
+        )
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Слишком много запросов — попробуйте позже"},
+                headers={"Retry-After": str(limit[1])},
+            )
     return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 2.4 (аудит GEMINI): примитивный in-memory token-bucket rate limiter.
+# Для одного инстанса достаточно; за горизонтальным масштабированием — Redis.
+# register 3/час, login 10/мин, enrich 30/мин.
+# ---------------------------------------------------------------------------
+
+_RATE_BUCKETS: dict[str, list[float]] = {}
+_RATE_LIMITS: dict[tuple[str, str], tuple[int, int]] = {
+    ("POST", "/api/register"): (3, 3600),
+    ("POST", "/api/login"): (10, 60),
+    ("POST", "/api/enrich"): (30, 60),
+}
+
+
+def _rate_allow(key: str, max_calls: int, window_sec: int) -> bool:
+    now = time.monotonic()
+    bucket = [t for t in _RATE_BUCKETS.get(key, []) if now - t < window_sec]
+    if len(bucket) >= max_calls:
+        _RATE_BUCKETS[key] = bucket
+        return False
+    bucket.append(now)
+    _RATE_BUCKETS[key] = bucket
+    return True
 
 
 @app.on_event("startup")
@@ -424,9 +462,14 @@ async def ws_enrich(ws: WebSocket) -> None:
     # БЛОК 2.5 (аудит GEMINI): браузер не умеет заголовки на WS — фронт шлёт
     # токен субпротоколом new WebSocket(url, ["bearer", token]); фолбэк ?token=.
     token = ""
-    for sub in ws.scope.get("subprotocols", []):
+    subs = ws.scope.get("subprotocols", [])
+    # БЛОК 2.5: браузер шлёт new WebSocket(url, ["bearer", <jwt>]). uvicorn
+    # сам согласует субпротокол из этого списка (обычно "bearer") — нам нужно
+    # лишь достать токен (последний элемент, отличный от "bearer").
+    for sub in reversed(subs):
         if sub and sub != "bearer":
             token = sub
+            break
     if not token:
         token = ws.query_params.get("token") or ""
     # ЭТАП 7: флаг перечитываем динамически (AUTH_ENFORCED/VILKA_AUTH_ENFORCED),

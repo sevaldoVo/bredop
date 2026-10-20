@@ -387,12 +387,9 @@ export function enrichNodeStream(
   onEvent: (ev: WsEnrichEvent) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    // ЭТАП 6: WebSocket не умеет заголовки — JWT едет query-параметром (бэк читает ?token=).
+    // БЛОК 2.6: JWT субпротоколом ['bearer', token] (токен не в URL). Фолбэк ?token= на бэке.
     const token = loadToken();
-    const wsUrl = token
-      ? `${WS_BASE}/ws/enrich?token=${encodeURIComponent(token)}`
-      : `${WS_BASE}/ws/enrich`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(`${WS_BASE}/ws/enrich`, token ? ['bearer', token] : undefined);
     let settled = false;
 
     ws.onopen = () => ws.send(JSON.stringify({ action: 'enrich', node: toWire(node) }));
@@ -464,9 +461,9 @@ export async function spiderRun(
   signal?: AbortSignal,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    // ЭТАП 6: JWT в query (WS не умеет заголовки), см. enrichNodeStream.
+    // БЛОК 2.6: JWT субпротоколом ['bearer', token] (токен не в URL). Фолбэк ?token= на бэке.
     const token = loadToken();
-    const ws = new WebSocket(token ? `${WS_BASE}/ws/enrich?token=${encodeURIComponent(token)}` : `${WS_BASE}/ws/enrich`);
+    const ws = new WebSocket(`${WS_BASE}/ws/enrich`, token ? ['bearer', token] : undefined);
     const finish = (fn: () => void) => { try { ws.close(); } catch { /* noop */ } fn(); };
     signal?.addEventListener('abort', () => finish(() => reject(new Error('aborted'))));
     ws.onopen = () =>

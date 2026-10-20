@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -153,6 +154,20 @@ def verify_password(plain: str, hashed: str) -> bool:
         return bcrypt.checkpw(plain.encode(), hashed.encode())
     except ValueError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 2.3 (аудит Gemini): bcrypt — CPU-блокирующая операция (~250 мс при
+# rounds=12). В async-хендлерах вызываем через asyncio.to_thread, чтобы не
+# вешать event loop под нагрузкой (register/login брутфорс).
+# ---------------------------------------------------------------------------
+
+async def hash_password_async(plain: str) -> str:
+    return await asyncio.to_thread(hash_password, plain)
+
+
+async def verify_password_async(plain: str, hashed: str) -> bool:
+    return await asyncio.to_thread(verify_password, plain, hashed)
 
 
 def create_token(user: User) -> tuple[str, int]:
@@ -327,7 +342,7 @@ async def register_user(body: RegisterRequest) -> TokenResponse:
             raise HTTPException(status.HTTP_409_CONFLICT, "Email уже зарегистрирован")
         user = User(
             email=email,
-            hashed_password=hash_password(body.password),
+            hashed_password=await hash_password_async(body.password),
             credits_balance=FREE_CREDITS_ON_REGISTER,
         )
         session.add(user)
@@ -345,7 +360,7 @@ async def login_user(body: LoginRequest) -> TokenResponse:
     email = body.email.lower().strip()
     async for session in session_scope():
         user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
-        if user is None or not verify_password(body.password, user.hashed_password):
+        if user is None or not await verify_password_async(body.password, user.hashed_password):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Неверный email или пароль")
         if not user.is_active:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Аккаунт заблокирован")
