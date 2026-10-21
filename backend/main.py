@@ -208,6 +208,10 @@ async def _startup_saas_db() -> None:
                     # принудительный сброс пароля админа на каждый старт
                     u.role = "admin"
                     u.hashed_password = hash_password(admin_password)
+                    # микро-коммит: подтягиваем баланс до VILKA_ADMIN_CREDITS, если меньше
+                    _admin_credits = int(os.getenv("VILKA_ADMIN_CREDITS", "100000"))
+                    if (u.credits_balance or 0) < _admin_credits:
+                        u.credits_balance = _admin_credits
                     print(f"[vilka] admin password reset on startup: {admin_email}")
                 await session.commit()
         elif admin_email:
