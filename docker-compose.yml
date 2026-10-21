@@ -21,6 +21,10 @@ services:
       AUTH_ENFORCED: ${VILKA_AUTH_ENFORCED:-${AUTH_ENFORCED:-0}}
       # JWT-секрет: без него токены умирают после рестарта контейнера
       VILKA_JWT_SECRET: ${VILKA_JWT_SECRET:-}
+      # Первый админ (создаётся/переписывается при старте; пусто или change-me* = не трогаем)
+      VILKA_ADMIN_EMAIL: ${VILKA_ADMIN_EMAIL:-}
+      VILKA_ADMIN_PASSWORD: ${VILKA_ADMIN_PASSWORD:-}
+      VILKA_ADMIN_CREDITS: ${VILKA_ADMIN_CREDITS:-100000}
     volumes:
       - ./data/breaches:/app/data/breaches
       - ./sessions:/app/sessions
