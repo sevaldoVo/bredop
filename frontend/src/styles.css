@@ -575,3 +575,92 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
   text-transform: uppercase;
   box-shadow: none;
 }
+
+/* ====================================================================
+   ЭТАП 9 / КОММИТ 1 (VORTEX): 5 тем + базовые классы.
+   Тема вешается на <html data-theme="..."> через ThemeProvider,
+   выбор хранится в localStorage.vilka_theme, дефолт — prefers-color-scheme.
+   Guardrails: радиус <=4px, один акцент, без эмодзи/градиентов/стекла.
+   ==================================================================== */
+
+/* --- phantom: дефолтная зелёная «призрачная» (текущая палитра) --- */
+[data-theme="phantom"] {
+  --term-bg: #060a07; --term-bg-1: #0a100b; --term-bg-2: #0e1710; --term-bg-3: #132015;
+  --border: #1c2420;
+  --green: #3ddc84; --green-dim: #2aa866; --green-dark: #123524;
+  --text: #d7e5da; --text-dim: #8fa396; --text-ash: #5b6f63;
+  --amber: #ffb020; --red: #ff3b30; --red-glow: rgba(255, 59, 48, 0.55);
+}
+
+/* --- axis: холодный сине-циановый аналитический --- */
+[data-theme="axis"] {
+  --term-bg: #050810; --term-bg-1: #0a1220; --term-bg-2: #0e1a2e; --term-bg-3: #14243c;
+  --border: #1c2a3e;
+  --green: #38bdf8; --green-dim: #2a8fc0; --green-dark: #123047;
+  --text: #d8e6f2; --text-dim: #8ba3bd; --text-ash: #5a718a;
+  --amber: #fbbf24; --red: #ff5d55; --red-glow: rgba(255, 93, 85, 0.55);
+}
+
+/* --- tactical: песочно-оливковый «полигон» --- */
+[data-theme="tactical"] {
+  --term-bg: #0b0a06; --term-bg-1: #14120b; --term-bg-2: #1d1a10; --term-bg-3: #272317;
+  --border: #2a2618;
+  --green: #c9b458; --green-dim: #9a8a42; --green-dark: #332e14;
+  --text: #ece4cf; --text-dim: #a89f86; --text-ash: #6f6854;
+  --amber: #ff9d00; --red: #e0503a; --red-glow: rgba(224, 80, 58, 0.55);
+}
+
+/* --- zeroday: чёрно-магента «0-day» --- */
+[data-theme="zeroday"] {
+  --term-bg: #08050c; --term-bg-1: #100b16; --term-bg-2: #170f20; --term-bg-3: #20142c;
+  --border: #2a1f35;
+  --green: #f0f; --green-dim: #b83ab8; --green-dark: #3a103a;
+  --text: #ecdaf5; --text-dim: #a68fb4; --text-ash: #6d5a7c;
+  --amber: #ffd166; --red: #ff2d55; --red-glow: rgba(255, 45, 85, 0.55);
+}
+
+/* --- ghost: светлая инверсия для дневной работы --- */
+[data-theme="ghost"] {
+  --term-bg: #f4f6f4; --term-bg-1: #ffffff; --term-bg-2: #e9eee9; --term-bg-3: #dde6dd;
+  --border: #c3ccc3;
+  --green: #0c7a3e; --green-dim: #0a6333; --green-dark: #d3ecdc;
+  --text: #14201a; --text-dim: #4c5c52; --text-ash: #7d8c82;
+  --amber: #a05a00; --red: #c01f1f; --red-glow: rgba(192, 31, 31, 0.35);
+}
+
+/* ---------- базовые классы спринта ---------- */
+.lbl { /* микро-подпись: mono, uppercase, утилитарный цвет */
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--text-ash);
+}
+.chip { /* маленький статус-чип: 1px рамка, квадратный */
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 0;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--text-dim); background: transparent;
+}
+.chip.ok    { color: var(--green); border-color: var(--green); }
+.chip.warn  { color: var(--amber); border-color: var(--amber); }
+.chip.bad   { color: var(--red);   border-color: var(--red); }
+.btn.outline { background: transparent; border: 1px solid var(--green); color: var(--green); }
+.btn.outline:hover { background: var(--green); color: var(--term-bg); }
+.btn.warn { background: transparent; border: 1px solid var(--amber); color: var(--amber); }
+.btn.warn:hover { background: var(--amber); color: var(--term-bg); border-color: var(--amber); }
+.card { /* универсальная панель: фон уровня 1, рамка 1px, без теней */
+  background: var(--term-bg-1); border: 1px solid var(--border); border-radius: 0;
+}
+.seg { /* сегментированный контрол (конфиденциальность, табы) */
+  display: inline-flex; border: 1px solid var(--border); border-radius: 0; overflow: hidden;
+}
+.seg > * {
+  padding: 5px 12px; border: 0; border-right: 1px solid var(--border);
+  background: transparent; color: var(--text-dim); cursor: pointer;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em;
+}
+.seg > *:last-child { border-right: 0; }
+.seg > .active, .seg > *:hover { background: var(--green); color: var(--term-bg); }
+
+/* точки переключения темы (AuthGate/Home футер) */
+.theme-dots { display: inline-flex; gap: 8px; align-items: center; }
+.theme-dot { width: 10px; height: 10px; border: 1px solid var(--border); border-radius: 0; cursor: pointer; padding: 0; background: var(--swatch, var(--green)); }
+.theme-dot.active { outline: 1px solid var(--green); outline-offset: 2px; }
