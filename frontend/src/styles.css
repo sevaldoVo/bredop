@@ -246,12 +246,10 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 
 .board {
   position: absolute; inset: 0;
-  background-color: var(--ink-0);
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(236, 230, 214, 0.055) 1px, transparent 0),
-    radial-gradient(ellipse 120% 90% at 50% 0%, rgba(242, 233, 207, 0.05), transparent 55%),
-    linear-gradient(180deg, rgba(226, 64, 42, 0.05), transparent 30%);
-  background-size: 26px 26px, auto, auto;
+  /* ЭТАП9 коммит9 (часть Б, п.3): ровно --term-bg + dot-grid 24px из --border; коричнево-красные градиенты убраны */
+  background-color: var(--term-bg);
+  background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 0);
+  background-size: 24px 24px;
   touch-action: none;
   cursor: grab;
 }
@@ -314,6 +312,19 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 }
 .node:hover { border-color: var(--text-ash); }
 .node.selected { border: 1px solid var(--green); }
+/* ЭТАП9 коммит9 (часть Б, п.4): у выбранной ноды засечки всегда зелёные — override красных target;
+   красный остаётся только на НЕвыбранном target */
+.node.selected::before {
+  background:
+    linear-gradient(var(--green), var(--green)) 0 0 / 14px 1px no-repeat,
+    linear-gradient(var(--green), var(--green)) 0 0 / 1px 14px no-repeat,
+    linear-gradient(var(--green), var(--green)) 100% 0 / 14px 1px no-repeat,
+    linear-gradient(var(--green), var(--green)) 100% 0 / 1px 14px no-repeat,
+    linear-gradient(var(--green), var(--green)) 0 100% / 14px 1px no-repeat,
+    linear-gradient(var(--green), var(--green)) 0 100% / 1px 14px no-repeat,
+    linear-gradient(var(--green), var(--green)) 100% 100% / 14px 1px no-repeat,
+    linear-gradient(var(--green), var(--green)) 100% 100% / 1px 14px no-repeat;
+}
 .node.dragging { z-index: 50; }
 .node.linksource { animation: pulse 1s infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 2px rgba(61, 220, 132, 0.35); } }
@@ -781,6 +792,17 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 .hero-offer { min-width: 0; }
 .eyebrow-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
 .hero h1 em.accent-red { color: var(--red); }
+/* ЭТАП9 коммит9 (часть Б, п.2): акцентное слово H1 — зелёный, не красный */
+.hero h1 em.accent-green { color: var(--green); font-style: normal; }
+
+/* ===== ЭТАП9 КОММИТ 9 (часть Б): селекты / board-фон / selected / seg ===== */
+/* Б.1 — запрет выделения текста на экранах (кроме полей ввода) */
+.auth-gate, .board, .home { user-select: none; -webkit-user-select: none; }
+input, textarea { user-select: text; -webkit-user-select: text; }
+
+/* Б.5 — активный сегмент/таб: зелёная заливка вместо красной (красный остаётся только .btn.danger и thread-path) */
+.seg button.on { background: var(--green); color: var(--term-bg); font-weight: 650; }
+.conf-active { background: var(--green); color: var(--term-bg); }
 .topbar-lbl { opacity: .7; white-space: nowrap; }
 .telemetry { border: 1px solid var(--border); background: var(--term-bg-1); padding: 16px 18px; font-family: var(--font-mono); }
 .tel-head { letter-spacing: .14em; color: var(--text-ash); font-size: 10px; text-transform: uppercase; margin-bottom: 12px; }

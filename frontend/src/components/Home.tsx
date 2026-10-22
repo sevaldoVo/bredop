@@ -113,7 +113,8 @@ export default function Home({
         <section className="hero hero-grid">
           <div className="hero-offer">
             <div className="eyebrow-row"><span className="chip">LOCAL-FIRST</span><span className="chip">GRAPH BOARD</span><span className="chip warn-chip">NO CLOUD LEAKS</span></div>
-            <h1>Доска расследований<br />для тех, кто ищет <em className="accent-red">СЛЕДЫ</em>, а не лайки.</h1>
+            {/* ЭТАП9 коммит9 (часть Б, п.2): H1 ровно по ТЗ, акцент — --green */}
+            <h1>ПРОБИВАЙ.<br />СВЯЗЫВАЙ.<br /><em className="accent-green">ДОКАЗЫВАЙ.</em></h1>
             <p className="lede">
               ВИЛКА — это пробковая доска из детективных фильмов, только без пыли: карточки улик,
               красные нити между ними, достоверность каждой находки и ссылка на источник.
