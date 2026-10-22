@@ -555,6 +555,39 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 }
 .auth-card input:focus { border-color: var(--green); }
 .auth-error { color: var(--red); font-size: 12px; font-family: var(--font-mono); }
+
+/* ===== ЭТАП 9 коммит 3 (VORTEX): AuthGate-спека ===== */
+.auth-brand-chip {
+  position: absolute; top: 14px; left: 16px; z-index: 2;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-ash);
+}
+.auth-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.auth-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 32px;
+  line-height: 1.1; letter-spacing: .02em; color: var(--text);
+  text-transform: uppercase;
+}
+.auth-tabs { width: 100%; }
+.auth-tabs button { flex: 1; height: 36px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; background: transparent; color: var(--text-dim); cursor: pointer; }
+.auth-demo-link {
+  align-self: center; font-family: var(--font-mono); font-size: 11px;
+  color: var(--green); text-decoration: underline; text-underline-offset: 3px; cursor: pointer;
+}
+.auth-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.auth-footer .lbl { font-size: 9px; }
+/* фикс жёлтого Chrome-autofill: держим терминальную палитру */
+.auth-card input:-webkit-autofill,
+.auth-card input:-webkit-autofill:hover,
+.auth-card input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px var(--term-bg) inset;
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+  transition: background-color 9999s ease-in-out 0s;
+}
 @media (max-width: 860px) {
   .auth-gate { grid-template-columns: 1fr; grid-template-rows: 38vh 1fr; }
   .auth-left { border-right: none; border-bottom: 1px solid var(--border); }

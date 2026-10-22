@@ -222,8 +222,10 @@ async def _startup_saas_db() -> None:
 
 
 @app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "vilka-backend"}
+async def health() -> dict[str, object]:
+    # auth_enforced прокидывается фронту: при 0 AuthGate показывает демо-вход без аккаунта.
+    enforced = os.getenv("VILKA_AUTH_ENFORCED", os.getenv("AUTH_ENFORCED", "1")) == "1"
+    return {"status": "ok", "service": "vilka-backend", "auth_enforced": enforced}
 
 
 def _resolve_source_id(src: Union[FactNode, SourceNodeLite]) -> str:

@@ -207,6 +207,19 @@ export async function login(email: string, password: string): Promise<TokenRespo
   return (await r.json()) as TokenResponse;
 }
 
+export interface HealthInfo {
+  status: string;
+  service: string;
+  auth_enforced?: boolean;
+}
+
+/** GET /api/health — живость бэкенда + режим авторизации (для демо-входа в AuthGate). */
+export async function fetchHealth(): Promise<HealthInfo> {
+  const r = await fetch(`${API_BASE}/api/health`);
+  if (!r.ok) throw new EnrichError(r.status, `health ${r.status}`);
+  return (await r.json()) as HealthInfo;
+}
+
 /** GET /api/me — профиль и баланс кредитов. */
 export async function fetchMe(): Promise<AuthUser> {
   const r = await fetch(`${API_BASE}/api/me`, { headers: authHeaders() });
