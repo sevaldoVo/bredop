@@ -35,8 +35,8 @@ export function DriftGraphCanvas({
 
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    let shader = '#3ddc84';
-    const syncColors = () => { shader = readVar('--green', '#3ddc84'); };
+    let shader = '#a855f7'; /* коммит12: дефолт = violet */
+    const syncColors = () => { shader = readVar('--green', '#a855f7'); };
     syncColors();
     const themeObserver = new MutationObserver(syncColors);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });

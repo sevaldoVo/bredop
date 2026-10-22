@@ -2,7 +2,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 
-export const THEMES = ["phantom", "axis", "tactical", "zeroday", "ghost"] as const;
+/* ЭТАП9 коммит12: курация тем — 4 боевые темы. Старые значения localStorage
+   ("phantom","zeroday") не проходят isTheme -> падают в дефолт (violet/ghost). */
+export const THEMES = ["violet", "axis", "tactical", "ghost"] as const;
 export type ThemeName = (typeof THEMES)[number];
 
 const STORAGE_KEY = "vilka_theme";
@@ -13,9 +15,9 @@ function isTheme(v: string | null): v is ThemeName {
 
 function systemDefault(): ThemeName {
   try {
-    return window.matchMedia("(prefers-color-scheme: light)").matches ? "ghost" : "phantom";
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "ghost" : "violet";
   } catch {
-    return "phantom";
+    return "violet";
   }
 }
 
@@ -24,7 +26,7 @@ interface ThemeCtx {
   setTheme: (t: ThemeName) => void;
 }
 
-const Ctx = createContext<ThemeCtx>({ theme: "phantom", setTheme: () => undefined });
+const Ctx = createContext<ThemeCtx>({ theme: "violet", setTheme: () => undefined });
 
 export function ThemeProvider({ children }: { children: ReactNode }): ReactElement {
   const [theme, setThemeState] = useState<ThemeName>(() => {
@@ -32,7 +34,7 @@ export function ThemeProvider({ children }: { children: ReactNode }): ReactEleme
       const saved = localStorage.getItem(STORAGE_KEY);
       return isTheme(saved) ? saved : systemDefault();
     } catch {
-      return "phantom";
+      return "violet";
     }
   });
 

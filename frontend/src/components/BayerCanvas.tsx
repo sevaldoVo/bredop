@@ -68,10 +68,11 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
     // цвета из токенов темы (--green как «--shader», --term-bg как фон).
     // КАЛИБРОВКА: читаем каждые ~500ms напрямую из getComputedStyle — без MutationObserver-кеша,
     // чтобы смена [data-theme] гарантированно попадала в шейдер.
-    let shaderColor = '#3ddc84';
-    let bgColor = '#060a07';
-    let shaderRgb: [number, number, number] = [61, 220, 132];
-    let bgRgb: [number, number, number] = [6, 10, 7];
+    // ЭТАП9 коммит12: дефолтные фолбэки = палитра violet (новый дефолт темы)
+    let shaderColor = '#a855f7';
+    let bgColor = '#09070f';
+    let shaderRgb: [number, number, number] = [168, 85, 247];
+    let bgRgb: [number, number, number] = [9, 7, 15];
     const parseHex = (hex: string, fb: [number, number, number]): [number, number, number] => {
       let h = hex.trim();
       // короткий hex (#f0f -> #ff00ff): иначе slice даёт NaN и zeroday молча фолбэкался в зелёный
@@ -82,10 +83,10 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
       return Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b) ? [r, g, b] : fb;
     };
     const syncColors = () => {
-      shaderColor = readVar(document.documentElement, '--green', '#3ddc84');
-      bgColor = readVar(document.documentElement, '--term-bg', '#060a07');
-      shaderRgb = parseHex(shaderColor, [61, 220, 132]);
-      bgRgb = parseHex(bgColor, [6, 10, 7]);
+      shaderColor = readVar(document.documentElement, '--green', '#a855f7');
+      bgColor = readVar(document.documentElement, '--term-bg', '#09070f');
+      shaderRgb = parseHex(shaderColor, [168, 85, 247]);
+      bgRgb = parseHex(bgColor, [9, 7, 15]);
     };
     syncColors();
     const colorTimer = window.setInterval(syncColors, 500);

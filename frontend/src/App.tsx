@@ -11,12 +11,12 @@ import type { AuthUser } from './api';
 import type { InvestigationCase } from './types';
 
 /** Свотчи тем для точек-переключателя (совпадают с [data-theme] в styles.css). */
+/* ЭТАП9 коммит12: 4 боевые темы (курация). */
 const THEME_SWATCH: Record<string, string> = {
-  phantom: '#3ddc84',
-  axis: '#22d3ee',
-  tactical: '#f59e0b',
-  zeroday: '#a855f7',
-  ghost: '#9ca3af',
+  violet: '#a855f7',
+  axis: '#38bdf8',
+  tactical: '#c9b458',
+  ghost: '#9aa5a0',
 };
 
 /** ЭТАП 9 коммит 3 (VORTEX): сплит — слева шейдер + лого, справа карточка инициализации сессии. */
