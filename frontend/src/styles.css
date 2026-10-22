@@ -203,12 +203,12 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 .section-title h2 { font-size: 22px; }
 .section-title .rule { flex: 1; height: 1px; background: var(--hairline-soft); }
 
-.feature-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1px; background: var(--hairline-soft); border: 1px solid var(--hairline-soft); margin-bottom: 48px; }
+.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin-bottom: 48px; }
 .feature {
-  background: var(--ink-0); padding: 20px 18px;
+  background: var(--term-bg); padding: 20px 18px;
   transition: background 0.2s;
 }
-.feature:hover { background: var(--ink-1); }
+.feature:hover { background: var(--term-bg-2); }
 .feature .num { font-family: var(--font-display); color: var(--vermilion); font-size: 13px; letter-spacing: 0.2em; }
 .feature h3 { font-size: 17px; margin: 8px 0 6px; }
 .feature p { margin: 0; font-size: 13.5px; color: var(--bone-dim); }
@@ -521,30 +521,45 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 .halftone-layer { position: absolute; inset: 0; overflow: hidden; background: var(--term-bg); }
 .halftone { display: block; width: 100%; height: 100%; pointer-events: auto; }
 
-/* AuthGate: сплит-экран (слева полотно + лого, справа карточка формы) */
+/* AuthGate VORTEX: Bayer-шейдер на ВЕСЬ экран, карточка по центру поверх (без blur) */
 .auth-gate {
   position: fixed; inset: 0; z-index: 999;
   background: var(--term-bg);
-  display: grid; grid-template-columns: 1fr min(420px, 92vw);
 }
-.auth-left { position: relative; display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--border); }
-.auth-left .halftone-layer { z-index: 0; }
+.auth-left { position: static; }
+.auth-left .halftone-layer { position: fixed; inset: 0; z-index: 0; }
 .auth-wordmark {
-  position: relative; z-index: 1;
+  position: fixed; top: 44px; left: 50%; transform: translateX(-50%); z-index: 1;
   font-family: var(--font-display); font-weight: 700;
   font-size: clamp(40px, 8vw, 96px);
   letter-spacing: 0.08em; color: var(--green);
-  text-transform: uppercase;
+  text-transform: uppercase; pointer-events: none; white-space: nowrap;
 }
 .auth-right {
-  display: flex; align-items: center; justify-content: center;
-  padding: 24px; background: var(--term-bg);
+  position: relative; z-index: 1;
+  display: grid; place-items: center; min-height: 100dvh;
+  padding: 24px; background: transparent;
 }
 .auth-card {
-  width: min(360px, 92vw); padding: 28px 26px;
-  background: var(--term-bg-1); border: 1px solid var(--border);
+  width: min(420px, 92vw); padding: 28px 26px;
+  background: color-mix(in srgb, var(--term-bg-1) 84%, transparent);
+  border: 1px solid var(--border);
   border-radius: 0; box-shadow: none;
   display: flex; flex-direction: column; gap: 12px;
+  /* угловые засечки как у .node::before */
+  position: relative;
+}
+.auth-card::before {
+  content: ""; position: absolute; inset: -1px; pointer-events: none;
+  background:
+    linear-gradient(var(--green), var(--green)) 0 0 / 10px 1px no-repeat,
+    linear-gradient(var(--green), var(--green)) 0 0 / 1px 10px no-repeat,
+    linear-gradient(var(--green), var(--green)) 100% 0 / 10px 1px no-repeat,
+    linear-gradient(var(--green), var(--green)) 100% 0 / 1px 10px no-repeat,
+    linear-gradient(var(--green), var(--green)) 0 100% / 10px 1px no-repeat,
+    linear-gradient(var(--green), var(--green)) 0 100% / 1px 10px no-repeat,
+    linear-gradient(var(--green), var(--green)) 100% 100% / 10px 1px no-repeat,
+    linear-gradient(var(--green), var(--green)) 100% 100% / 1px 10px no-repeat;
 }
 .auth-logo { font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: .18em; color: var(--green); }
 .auth-sub { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); margin-top: -8px; }
@@ -558,7 +573,7 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 
 /* ===== ЭТАП 9 коммит 3 (VORTEX): AuthGate-спека ===== */
 .auth-brand-chip {
-  position: absolute; top: 14px; left: 16px; z-index: 2;
+  position: fixed; top: 14px; left: 16px; z-index: 2;
   font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em;
   text-transform: uppercase; color: var(--text-ash);
 }
@@ -588,14 +603,44 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
   caret-color: var(--text);
   transition: background-color 9999s ease-in-out 0s;
 }
-@media (max-width: 860px) {
-  .auth-gate { grid-template-columns: 1fr; grid-template-rows: 38vh 1fr; }
-  .auth-left { border-right: none; border-bottom: 1px solid var(--border); }
+/* единая высота контролов */
+.auth-card input, .auth-card button { height: 36px; padding: 9px 12px; }
+.auth-card label input { height: 36px; }
+
+/* Статус-бар доски (ЭТАП 9 коммит 4): fixed bottom 28px */
+.board-status {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+  height: 28px; display: flex; align-items: center; gap: 14px;
+  padding: 0 12px; background: var(--term-bg-1);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-ash); white-space: nowrap;
 }
+.board-status b { color: var(--green); font-weight: 500; }
+.board-status .dot { color: var(--green); }
+.board-status .dot.off { color: var(--text-dim); }
+.board-wrap { padding-bottom: 28px; }
+
+/* Тем-свитчер в топбаре */
+.theme-switch { position: relative; }
+.theme-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 70;
+  min-width: 140px; background: var(--term-bg-1); border: 1px solid var(--border);
+  display: flex; flex-direction: column;
+}
+.theme-menu button {
+  all: unset; cursor: pointer; padding: 7px 10px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-dim);
+}
+.theme-menu button:hover, .theme-menu button.on { color: var(--green); background: var(--term-bg-2); }
+
+/* SVG-иконки тул-рейла */
+.tool svg { width: 18px; height: 18px; display: block; stroke: currentColor; fill: none; stroke-width: 1.5; }
 
 /* Home: hero поверх дрейфующего графа */
 .home-hero-wrap { position: relative; border-bottom: 1px solid var(--border); margin-bottom: 40px; overflow: hidden; }
-.home-hero-wrap .halftone-layer { z-index: 0; }
+.home-hero-wrap .halftone-layer { position: absolute; inset: 0; z-index: 0; background: transparent; }
 .home-hero-wrap .hero { position: relative; z-index: 1; padding-bottom: 34px; margin-bottom: 0; border-bottom: none; }
 
 /* СИМУЛЯЦИЯ: янтарный контур (по дизайн-спринту), моно-шрифт */

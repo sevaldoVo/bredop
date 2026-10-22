@@ -395,17 +395,22 @@ const WS_BASE: string = (() => {
  * (started -> found* -> done). Промис резолвится на 'done', реджектится на
  * 'error' или закрытии сокета до завершения.
  */
+/** Состояние сокета для статус-бара доски: 'open' | 'connecting' | 'closed'. */
+export type WsState = 'open' | 'connecting' | 'closed';
+
 export function enrichNodeStream(
   node: FactNode,
   onEvent: (ev: WsEnrichEvent) => void,
+  onState?: (s: WsState) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     // БЛОК 2.6: JWT субпротоколом ['bearer', token] (токен не в URL). Фолбэк ?token= на бэке.
     const token = loadToken();
     const ws = new WebSocket(`${WS_BASE}/ws/enrich`, token ? ['bearer', token] : undefined);
     let settled = false;
+    onState?.('connecting');
 
-    ws.onopen = () => ws.send(JSON.stringify({ action: 'enrich', node: toWire(node) }));
+    ws.onopen = () => { onState?.('open'); ws.send(JSON.stringify({ action: 'enrich', node: toWire(node) })); };
     ws.onmessage = (ev: MessageEvent<string>) => {
       let msg: WsEnrichEvent;
       try {
@@ -428,6 +433,7 @@ export function enrichNodeStream(
       if (!settled) reject(new EnrichError(-1, 'websocket error'));
     };
     ws.onclose = () => {
+      onState?.('closed');
       if (!settled) reject(new EnrichError(-1, 'websocket closed before done'));
     };
   });

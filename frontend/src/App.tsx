@@ -47,13 +47,13 @@ function AuthGate({ auth, onDemoEnter }: { auth: ReturnType<typeof useAuth>; onD
   return (
     <div className="auth-gate" role="dialog" aria-modal="true">
       {/* левая колонка: Bayer-шейдер на всю высоту + лого Unbounded + бренд-чип */}
-      <div className="auth-left">
+      {/* ЭТАП 9 коммит 4: шейдер на весь экран, лого и чипы поверх, карточка по центру */}
+      <div className="auth-left" aria-hidden="true">
         <div className="halftone-layer"><BayerCanvas /></div>
-        <div className="auth-brand-chip lbl">ВИЛКА // OSINT TERM OS</div>
-        <div className="auth-wordmark">ВИЛКА</div>
       </div>
+      <div className="auth-brand-chip lbl">ВИЛКА // OSINT TERM OS</div>
+      <div className="auth-wordmark">ВИЛКА</div>
 
-      {/* правая колонка: карточка 420px */}
       <div className="auth-right">
         <form className="auth-card" onSubmit={(e) => void submit(e)}>
           <div className="auth-chips">

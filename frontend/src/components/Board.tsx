@@ -11,8 +11,28 @@ import { Modal, KindPicker, Seg, relTime, fmtDateTime } from '../ui';
 import {
   enrichNode, spiderRun, findPath, exportGraph, EnrichError,
   apiNodeToFactNode, apiLinkToFactLink, stampEngine,
-  type ApiFactNode, type ApiFactLink, type SpiderEvent,
+  type ApiFactNode, type ApiFactLink, type SpiderEvent, type WsState,
 } from '../api';
+import { THEMES, useTheme } from '../theme';
+
+/* ЭТАП 9 коммит 4: inline SVG-иконки тул-рейла (stroke 1.5, без эмодзи). */
+const ICONS = {
+  plus: 'M12 5v14M5 12h14',
+  link: 'M10 13a5 5 0 0 0 7.07 0l2.5-2.5a5 5 0 0 0-7.07-7.07L11 5M14 11a5 5 0 0 0-7.07 0L4.43 13.5a5 5 0 0 0 7.07 7.07L13 19',
+  search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-4.35-4.35',
+  frame: 'M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4',
+  spider: 'M12 8a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM12 2v3M12 19v3M2 12h3M19 12h3M5 5l2.5 2.5M16.5 16.5L19 19M19 5l-2.5 2.5M7.5 16.5L5 19',
+  chain: 'M9 12a3 3 0 0 1 3-3h4a3 3 0 0 1 0 6h-1M15 12a3 3 0 0 1-3 3H8a3 3 0 0 1 0-6h1',
+  download: 'M12 3v12M7 10l5 5 5-5M4 19h16',
+  bolt: 'M13 2L4 14h6l-1 8 9-12h-6l1-8z',
+} as const;
+function Icon({ d }: { d: string }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d={d} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 /** Radius of circular layout for fresh nodes around the enriched one. */
 const ENRICH_RADIUS = 240;
@@ -60,6 +80,11 @@ export default function Board({
   const [pathA, setPathA] = useState<string | null>(null);
   const [pathIds, setPathIds] = useState<{ nodes: string[]; links: string[] }>({ nodes: [], links: [] });
   const [toast, setToast] = useState<string | null>(null);
+  // ЭТАП 9 коммит 4: данные статус-бара + тем-свитчер
+  const { theme, setTheme } = useTheme();
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [wsState, setWsState] = useState<WsState>('closed');
+  const [lastProbe, setLastProbe] = useState<{ engine: 'mock' | 'live'; ms: number }>({ engine: 'mock', ms: 0 });
   const spawnedRef = useRef<Set<string>>(new Set()); // ids created by backend (spawn animation)
   const toastTimer = useRef<number | null>(null);
 
@@ -411,6 +436,7 @@ export default function Board({
       setEnrichingId(nodeId);
       try {
         const res = await enrichNode(node);
+        setLastProbe({ engine: res.engine, ms: res.took_ms }); // статус-бар: LAST/engine
         // ЭТАП 7: проставляем движок каждой ноде — для бейджа «СИМУЛЯЦИЯ» при engine=mock.
         const applied = await applyApiResults(res.nodes.map((n) => stampEngine(n, res.engine)), res.links);
         showToast(applied
@@ -442,10 +468,12 @@ export default function Board({
         links: Object.values(cRef.current.links),
       };
       let found = 0;
+      setWsState('connecting');
       // ЭТАП 7: движок последнего done-события — для бейджа «СИМУЛЯЦИЯ» на спайдер-нодах.
       let lastEngine: 'mock' | 'live' = 'live';
       try {
         await spiderRun(graph, startNodeId, depth, async (ev: SpiderEvent) => {
+          if (ev.status === 'spider_started' || ev.status === 'enriching') setWsState('open');
           if (ev.status === 'found' && (ev.node || ev.link)) {
             const nodes = ev.node ? [stampEngine(ev.node, lastEngine)] : [];
             const links = ev.link ? [ev.link] : [];
@@ -453,7 +481,7 @@ export default function Board({
           } else if (ev.status === 'enriching' && ev.value) {
             setHint(`Спайдер [${ev.depth}]: ${ev.value}`);
           } else if (ev.status === 'done' || ev.status === 'spider_done') {
-            if (ev.engine) lastEngine = ev.engine;
+            if (ev.engine) { lastEngine = ev.engine; setLastProbe((p) => ({ ...p, engine: ev.engine as 'mock' | 'live' })); }
           }
         });
         setHint(null);
@@ -462,6 +490,7 @@ export default function Board({
         setHint(null);
         showToast(`Спайдер остановлен: ${(e as Error).message.slice(0, 60)}`);
       } finally {
+        setWsState('closed');
         setSpiderActive(false);
       }
     },
@@ -621,15 +650,31 @@ export default function Board({
         {/* ЭТАП 6/7: баланс кредитов + «Пополнить» + «Выйти» */}
         {user != null && (
           <>
-            <div className="chip mono" title={`вход: ${user.email}`}>⚡ {user.credits_balance} кр.</div>
+            <div className="chip mono" title={`вход: ${user.email}`}><Icon d={ICONS.bolt} /> CR: {user.credits_balance}</div>
             {onTopUp && (
-              <button className="btn small" onClick={onTopUp} title="Создать крипто-инвойс (+1000 кредитов)">💳 Пополнить</button>
+              <button className="btn small" onClick={onTopUp} title="Создать крипто-инвойс (+1000 кредитов)">Пополнить</button>
             )}
             {onLogout && (
               <button className="btn ghost small" onClick={onLogout} title="Выйти из аккаунта">Выйти</button>
             )}
           </>
         )}
+        {/* ЭТАП 9 коммит 4: тем-свитчер */}
+        <div className="theme-switch">
+          <button className="chip mono" style={{ cursor: 'pointer', background: 'transparent' }}
+            onClick={() => setThemeMenuOpen((o) => !o)} title="Сменить тему">
+            THEME: {theme.toUpperCase()}
+          </button>
+          {themeMenuOpen && (
+            <div className="theme-menu">
+              {THEMES.map((t) => (
+                <button key={t} className={t === theme ? 'on' : ''} onClick={() => { setTheme(t); setThemeMenuOpen(false); }}>
+                  {t.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button className="btn small" onClick={() => setCaseModal(true)}>Дело</button>
       </div>
 
@@ -693,7 +738,7 @@ export default function Board({
                 <div className="title">{n.title}</div>
                 {n.value && <div className="value">{n.value}</div>}
                 <div className="foot">
-                  {n.sources.length > 0 && <span className="src-count">⌗ {n.sources.length}</span>}
+                  {n.sources.length > 0 && <span className="src-count">SRC:{n.sources.length}</span>}
                   {n.tags.slice(0, 1).map((t) => <span key={t} className="tag">#{t}</span>)}
                   <span className="conf-bar" title={`достоверность: ${CONF[n.conf].label}`}>
                     {[0, 1, 2, 3].map((i) => (
@@ -708,7 +753,7 @@ export default function Board({
 
         {/* tools */}
         <div className="board-tools">
-          <button className="tool" title="Новая карточка (N)" onClick={() => setShowAdd(true)}>＋</button>
+          <button className="tool" title="Новая карточка (N)" onClick={() => setShowAdd(true)}><Icon d={ICONS.plus} /></button>
           <button
             className={`tool${linkFrom ? ' on' : ''}`}
             title="Красная нить (L)"
@@ -717,9 +762,9 @@ export default function Board({
               else if (sel?.type === 'node') { setLinkFrom(sel.id); setHint('Тяни красную нить: выбери вторую карточку'); }
               else setHint('Сначала выбери карточку, потом жми нить');
             }}
-          >〜</button>
-          <button className={`tool${showSearch ? ' on' : ''}`} title="Поиск по делу (F)" onClick={() => setShowSearch((s) => !s)}>⌕</button>
-          <button className="tool" title="Всё дело на экране" onClick={fitAll}>▣</button>
+          ><Icon d={ICONS.link} /></button>
+          <button className={`tool${showSearch ? ' on' : ''}`} title="Поиск по делу (F)" onClick={() => setShowSearch((s) => !s)}><Icon d={ICONS.search} /></button>
+          <button className="tool" title="Всё дело на экране" onClick={fitAll}><Icon d={ICONS.frame} /></button>
           {/* [PATCH-6] OSINT panel: spider, path, export */}
           <button
             className={`tool${spiderActive ? ' on' : ''}`}
@@ -729,7 +774,7 @@ export default function Board({
               if (sel?.type === 'node') void runSpider(sel.id, 2);
               else showToast('Сначала выбери стартовую карточку');
             }}
-          >{spiderActive ? '⏳' : '🕷'}</button>
+          ><Icon d={ICONS.spider} /></button>
           <button
             className={`tool${pathMode !== 'off' ? ' on' : ''}`}
             title="Найти путь между двумя карточками"
@@ -737,8 +782,8 @@ export default function Board({
               if (pathMode === 'off') { setPathMode('pickA'); setPathIds({ nodes: [], links: [] }); setHint('Путь: ткни ПЕРВУЮ карточку'); }
               else { setPathMode('off'); setHint(null); }
             }}
-          >🔗</button>
-          <button className="tool" title="Экспорт графа в GraphML (Maltego/Gephi)" onClick={() => void downloadExport()}>⭳</button>
+          ><Icon d={ICONS.chain} /></button>
+          <button className="tool" title="Экспорт графа в GraphML (Maltego/Gephi)" onClick={() => void downloadExport()}><Icon d={ICONS.download} /></button>
         </div>
 
         {showSearch && (
@@ -769,10 +814,10 @@ export default function Board({
           </div>
         )}
 
-        <div className="zoom-indicator">
+        <div className="zoom-indicator chip">
           <button className="btn ghost small" onClick={() => zoomAt(1 / 1.2)}>−</button>
-          <span className="mono" style={{ fontSize: 12, color: 'var(--ash)' }}>{zoomPct}%</span>
-          <button className="btn ghost small" onClick={() => zoomAt(1.2)}>＋</button>
+          <span className="mono" style={{ fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase' }}>{zoomPct}%</span>
+          <button className="btn ghost small" onClick={() => zoomAt(1.2)}>+</button>
         </div>
 
         {hint && <div className="hint-banner">{hint}</div>}
@@ -809,6 +854,16 @@ export default function Board({
             onGotoNode={(id) => { const n = c.nodes[id]; setSel({ type: 'node', id }); centerOn(n.x + NODE_W / 2, n.y + NODE_H / 2); }}
           />}
         </aside>
+      </div>
+
+      {/* ЭТАП 9 коммит 4: статус-бар — WS/engine/latency/credits/theme */}
+      <div className="board-status">
+        <span>WS: {wsState === 'open' ? <b>CONNECTED</b> : wsState === 'connecting' ? 'CONNECTING' : 'IDLE'} <span className={`dot${wsState === 'open' ? '' : ' off'}`}>●</span></span>
+        <span>ENGINE: <b>{lastProbe.engine.toUpperCase()}</b></span>
+        <span>LAST: <b>{lastProbe.ms || '—'}ms</b></span>
+        <span>CR: <b>{user ? user.credits_balance : '—'}</b></span>
+        <span>THEME: <b>{theme.toUpperCase()}</b></span>
+        <span style={{ marginLeft: 'auto' }}>v0.9</span>
       </div>
 
       {showAdd && (
@@ -1004,17 +1059,17 @@ function NodeInspector({
         </div>
 
         <div className="row" style={{ marginTop: 18 }}>
-          <button className="btn" onClick={onStartLink}>〜 Нить отсюда</button>
+          <button className="btn" onClick={onStartLink}>НИТЬ ОТ СЮДА</button>
           <button className="btn danger" style={{ marginLeft: 'auto' }} onClick={onDelete}>Удалить</button>
         </div>
         {/* [PATCH-3] OSINT buttons: enrich & spider */}
         {(onEnrich || onSpider) && (
           <div className="row" style={{ marginTop: 8 }}>
             <button className="btn primary" onClick={onEnrich} disabled={enrichBusy}>
-              {enrichBusy ? '⏳ Пробиваем…' : '🔍 Обогатить'}
+              {enrichBusy ? 'ПРОБИВАЕМ…' : 'ОБОГАТИТЬ'}
             </button>
             <button className="btn" style={{ marginLeft: 8 }} onClick={onSpider} disabled={spiderBusy || enrichBusy}>
-              {spiderBusy ? '⏳ Раскрутка…' : '🕷 Раскрутить (Spider)'}
+              {spiderBusy ? 'РАСКРУТКА…' : 'РАСКРУТИТЬ (SPIDER)'}
             </button>
           </div>
         )}
@@ -1037,7 +1092,7 @@ function LinkInspector({
   return (
     <>
       <header>
-        <span style={{ color: 'var(--vermilion)', fontSize: 20 }}>〜</span>
+        <span style={{ color: 'var(--red)', fontSize: 16, fontFamily: 'var(--font-mono)' }}>--</span>
         <h3>Красная нить</h3>
         <button className="close-x" onClick={onClose}>×</button>
       </header>
