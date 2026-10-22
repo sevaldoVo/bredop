@@ -3,6 +3,7 @@ import { emptyCase, newNode, STATUS_META, type InvestigationCase } from '../type
 import { loadIndex, loadCase, saveCase, deleteCase, exportCases, importCases, type CaseMeta } from '../storage';
 import { Modal, useConfirm, relTime, fmtDate } from '../ui';
 import { DriftGraphCanvas } from './DriftGraphCanvas';
+import { useAuth } from '../useAuth';
 
 const NODE_W = 208;
 const NODE_H = 96;
@@ -23,6 +24,8 @@ export default function Home({
   const [summary, setSummary] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'cold' | 'closed'>('all');
   const confirm = useConfirm();
+  const { user: authUser, logout } = useAuth();
+  const jwt = !!authUser;
 
   const refresh = () => loadIndex().then(setMetas);
   useEffect(() => { refresh(); }, []);
@@ -92,27 +95,43 @@ export default function Home({
 
   return (
     <div className="app">
+      {/* ЭТАП9 коммит8: бренд + бейдж v0.9; справа микро-лейбл + «СЕССИЯ АГЕНТА». Импорт/экспорт живут в tool-rail доски */}
       <div className="topbar">
-        <div className="brand">Вилка<small>v0.1 · локально</small></div>
+        <div className="brand">ВИЛКА<small>v0.9</small></div>
         <div className="spacer" />
-        {/* ЭТАП9 коммит7: Импорт/Экспорт убраны из шапки — живут только в tool-rail доски */}
+        <span className="lbl topbar-lbl">OSINT INVESTIGATION SUITE</span>
+        <a className="btn outline sm" href={jwt ? '/' : '/login'}
+           onClick={(e) => { if (jwt) { e.preventDefault(); logout(); window.location.assign('/'); } }}>
+          {jwt ? 'ВЫЙТИ' : 'СЕССИЯ АГЕНТА'}
+        </a>
       </div>
 
       <div className="home">
-        {/* ЭТАП 9: фон-режим — дрейфующий граф из 20 нод под крупным заголовком */}
+        {/* ЭТАП9 коммит8: hero = grid 1fr 320px (оффер + telemetry), наш живой DriftGraphCanvas на всю ширину */}
         <div className="home-hero-wrap">
         <div className="halftone-layer"><DriftGraphCanvas /></div>
-        <section className="hero">
-          <h1>Доска расследований<br />для тех, кто ищет <em>следы</em>, а не лайки.</h1>
-          <p className="lede">
-            ВИЛКА — это пробковая доска из детективных фильмов, только без пыли: карточки улик,
-            красные нити между ними, достоверность каждой находки и ссылка на источник.
-            Всё живёт у тебя на устройстве — ничего никуда не улетает. Работает на телефоне и на компе.
-          </p>
-          <div className="actions">
-            <button className="btn primary" onClick={() => setCreating(true)}>＋ Новое дело</button>
-            <button className="btn" onClick={() => document.getElementById('cases')?.scrollIntoView({ behavior: 'smooth' })}>Открыть последнее</button>
+        <section className="hero hero-grid">
+          <div className="hero-offer">
+            <div className="eyebrow-row"><span className="chip">LOCAL-FIRST</span><span className="chip">GRAPH BOARD</span><span className="chip warn-chip">NO CLOUD LEAKS</span></div>
+            <h1>Доска расследований<br />для тех, кто ищет <em className="accent-red">СЛЕДЫ</em>, а не лайки.</h1>
+            <p className="lede">
+              ВИЛКА — это пробковая доска из детективных фильмов, только без пыли: карточки улик,
+              красные нити между ними, достоверность каждой находки и ссылка на источник.
+              Всё живёт у тебя на устройстве — ничего никуда не улетает.
+            </p>
+            <div className="actions">
+              <button className="btn primary" onClick={() => setCreating(true)}>＋ НОВОЕ ДЕЛО</button>
+              <button className="btn outline" onClick={() => document.getElementById('cases')?.scrollIntoView({ behavior: 'smooth' })}>ОТКРЫТЬ ДЕМО-ДОСКУ</button>
+            </div>
           </div>
+          <aside className="telemetry" aria-label="телеметрия">
+            <div className="tel-head lbl">SYSTEM TELEMETRY</div>
+            <div className="tel-row"><span>ХРАНИЛИЩЕ</span><b>LOCAL / IDB</b></div>
+            <div className="tel-row"><span>ТИПЫ УЗЛОВ</span><b>12 СХЕМ</b></div>
+            <div className="tel-row"><span>ШКАЛА</span><b>4 УРОВНЯ</b></div>
+            <div className="tel-row"><span>ЭКСПОРТ</span><b>JSON DUMP</b></div>
+            <div className="tel-foot">ГОРЯЧИЙ СТАРТ: <kbd>N</kbd></div>
+          </aside>
         </section>
         </div>
 
@@ -182,13 +201,16 @@ export default function Home({
           </div>
         </section>
 
-        <footer style={{ marginTop: 56, borderTop: '1px solid var(--hairline-soft)', paddingTop: 18 }} className="muted">
-          <div className="stamp" style={{ marginBottom: 6 }}>коротко о горячих клавишах на доске</div>
-          <span className="kbd">N</span> новая карточка &nbsp;·&nbsp;
-          <span className="kbd">L</span> нить &nbsp;·&nbsp;
-          <span className="kbd">F</span> поиск &nbsp;·&nbsp;
-          <span className="kbd">Del</span> удалить выбранное &nbsp;·&nbsp;
-          <span className="kbd">Esc</span> отмена. На телефоне — те же кнопки слева сверху, жесты: один палец — двигать, два — зум.
+        {/* ЭТАП9 коммит8: футер — hotkeys-бар + build-строка */}
+        <footer className="home-footer">
+          <div className="hotkey-bar">
+            <span className="hk"><kbd>N</kbd> новая карточка</span>
+            <span className="hk"><kbd>L</kbd> нить</span>
+            <span className="hk"><kbd>F</kbd> поиск</span>
+            <span className="hk"><kbd>DEL</kbd> удалить выбранное</span>
+            <span className="hk"><kbd>ESC</kbd> отмена</span>
+          </div>
+          <div className="build-line">ВИЛКА OSINT // BUILD 0.9.4 // LOCAL_STORAGE_ONLY</div>
         </footer>
       </div>
 

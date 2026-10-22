@@ -774,3 +774,24 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 
 /* ЭТАП9 коммит7: чипы топбара — mono 10px uppercase, единая высота 28px */
 .topbar .chip, .topbar .btn.small { height: 28px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+
+/* ===== ЭТАП9 КОММИТ 8: Home-донор (hero-grid + telemetry + футер) и user-select фикс ===== */
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 40px; align-items: start; }
+@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } .telemetry { max-width: 320px; } }
+.hero-offer { min-width: 0; }
+.eyebrow-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+.hero h1 em.accent-red { color: var(--red); }
+.topbar-lbl { opacity: .7; white-space: nowrap; }
+.telemetry { border: 1px solid var(--border); background: var(--term-bg-1); padding: 16px 18px; font-family: var(--font-mono); }
+.tel-head { letter-spacing: .14em; color: var(--text-ash); font-size: 10px; text-transform: uppercase; margin-bottom: 12px; }
+.tel-row { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.tel-row span { color: var(--text-ash); text-transform: uppercase; letter-spacing: .08em; }
+.tel-row b { color: var(--green); font-weight: 500; }
+.tel-foot { margin-top: 12px; font-size: 10px; color: var(--text-dim); letter-spacing: .08em; }
+.tel-foot kbd { border: 1px solid var(--border); background: var(--term-bg-2); padding: 1px 6px; color: var(--green); }
+.home-footer { margin-top: 56px; border-top: 1px solid var(--border); padding-top: 18px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.hotkey-bar { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--text-dim); }
+.hotkey-bar .hk kbd { margin-right: 6px; }
+.build-line { font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-ash); }
+/* микро-фикс: убрать красные селекты на входе */
+.auth-stage, .auth-wordmark, .auth-title { user-select: none; -webkit-user-select: none; }
