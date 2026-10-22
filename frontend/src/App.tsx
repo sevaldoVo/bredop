@@ -6,6 +6,7 @@ import { useAuth } from './useAuth';
 import { BayerCanvas } from './components/BayerCanvas';
 import { THEMES, useTheme } from './theme';
 import { fetchHealth, loadToken } from './api';
+import { loadCase } from './storage';
 import type { AuthUser } from './api';
 import type { InvestigationCase } from './types';
 
@@ -126,11 +127,28 @@ function AuthGate({ auth, onDemoEnter }: { auth: ReturnType<typeof useAuth>; onD
 
 export default function App() {
   const [route, setRoute] = useState<{ name: 'home' } | { name: 'board'; c: InvestigationCase }>({ name: 'home' });
+  /* ЭТАП10 коммит10, п.3: id ноды для автозапуска spider (прилетает из quick-seed через ?spider=) */
+  const [autoSpiderId, setAutoSpiderId] = useState<string | null>(null);
   const toast = useToast();
   // ЭТАП 6: JWT-авторизация — прокидываем юзера и обработчик 402 в Board.
   const auth = useAuth();
   // ЭТАП 9: демо-режим (AUTH_ENFORCED=0) — скрываем gate без токена.
   const [demoEntered, setDemoEntered] = useState(false);
+
+  /* ЭТАП10 коммит10, п.3: deep-link /?case=<id>&spider=<nodeId> — открыть доску сразу с автоспайдером */
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const caseId = q.get('case');
+    if (!caseId) return;
+    void loadCase(caseId).then((c) => {
+      if (c) {
+        setRoute({ name: 'board', c });
+        setAutoSpiderId(q.get('spider'));
+      }
+      window.history.replaceState({}, '', '/');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const onVilka = (e: Event) => {
@@ -176,6 +194,7 @@ export default function App() {
           onPaymentRequired={handlePaymentRequired}
           onTopUp={() => void handleTopUp()}
           onLogout={() => { auth.logout(); setDemoEntered(false); }}
+          autoSpider={autoSpiderId}
         />
       )}
       {showAuthGate && <AuthGate auth={auth} onDemoEnter={() => setDemoEntered(true)} />}

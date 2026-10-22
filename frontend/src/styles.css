@@ -366,13 +366,17 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 .tool:hover { background: var(--ink-3); }
 .tool.on { border-color: var(--vermilion); color: var(--vermilion); }
 
-.zoom-indicator {
-  position: fixed; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 60;
-  display: flex; align-items: center; gap: 6px;
-  background: var(--ink-1); border: 1px solid var(--hairline-soft);
-  padding: 4px 6px; border-radius: var(--r-sm);
-  box-shadow: var(--shadow-plate);
+/* ЭТАП10 коммит10, п.2: zoom-dock внутри холста — absolute right/bottom 16px от .board */
+.zoom-dock {
+  position: absolute; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 58;
+  display: flex; align-items: center; gap: 6px; height: 28px;
+  background: var(--term-bg-1); border: 1px solid var(--border);
+  padding: 2px 6px; border-radius: 0;
 }
+.zoom-dock .zoom-val { font-size: 10px; letter-spacing: '.14em'; text-transform: uppercase; color: var(--green); }
+
+/* ЭТАП10 коммит10, п.1: мета-строка вместо дубля value */
+.mono-meta { font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-ash); }
 
 .hint-banner {
   position: fixed; left: 50%; transform: translateX(-50%);
@@ -817,3 +821,21 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 .build-line { font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-ash); }
 /* микро-фикс: убрать красные селекты на входе */
 .auth-stage, .auth-wordmark, .auth-title { user-select: none; -webkit-user-select: none; }
+
+/* ===== ЭТАП10 коммит10: Home-workspace + quick seed ===== */
+.ws-hero { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: start; padding: 24px 0 8px; }
+.ws-hero-line { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.ws-title { font-family: var(--font-display); font-weight: 700; font-size: 28px; letter-spacing: .02em; color: var(--text); margin: 0; }
+.ws-telemetry { position: static; }
+
+.seed-panel { border: 1px solid var(--border); background: var(--term-bg-1); padding: 20px; margin: 16px 0; display: grid; gap: 12px; }
+.seed-head { color: var(--text-dim); }
+.seed-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.seed-chips .chip { cursor: pointer; font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; background: transparent; color: var(--text-dim); border: 1px solid var(--border); height: 28px; padding: 0 10px; display: inline-flex; align-items: center; }
+.seed-chips .chip.on { background: var(--green); color: var(--term-bg); border-color: var(--green); }
+.seed-row { display: flex; gap: 8px; }
+.seed-input { flex: 1; height: 36px; background: var(--term-bg); border: 1px solid var(--border); color: var(--text); padding: 9px 12px; font-size: 13px; }
+.seed-mods { display: flex; flex-wrap: wrap; gap: 16px; }
+.mod-check { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.mod-check input[type="checkbox"] { appearance: none; width: 12px; height: 12px; border: 1px solid var(--border); background: var(--term-bg); display: inline-grid; place-content: center; cursor: pointer; }
+.mod-check input[type="checkbox"]:checked { border-color: var(--green); background: var(--green); }

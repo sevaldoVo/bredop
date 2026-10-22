@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { emptyCase, newNode, STATUS_META, type InvestigationCase } from '../types';
+import { emptyCase, newLink, newNode, STATUS_META, type InvestigationCase, type NodeKind } from '../types';
 import { loadIndex, loadCase, saveCase, deleteCase, exportCases, importCases, type CaseMeta } from '../storage';
 import { Modal, useConfirm, relTime, fmtDate } from '../ui';
 import { DriftGraphCanvas } from './DriftGraphCanvas';
@@ -10,6 +10,30 @@ const NODE_H = 96;
 
 const CODENAMES = ['СЕРОКРЫЛ', 'КОРШУН', 'ГЛУБИННАЯ', 'ОПЁНКОВЫЙ', 'ТИХИЙ-7', 'КРЕМЕНЬ', 'ПОЛЫНЬ', 'ЖЕЛЕЗО'];
 const randomCodename = () => CODENAMES[Math.floor(Math.random() * CODENAMES.length)];
+
+/* ЭТАП10 коммит10, п.3: эвристика типа по вводу quick-seed */
+function guessKind(raw: string): NodeKind {
+  const v = raw.trim().toLowerCase();
+  if (v.startsWith('@')) return 'handle';
+  if (/^\+?\d[\d\s\-()]{6,}$/.test(v)) return 'phone';
+  if (v.includes('@') && /\./.test(v.split('@')[1] ?? '')) return 'email';
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(v)) return 'ip';
+  if (/^[a-z0-9-]+\.[a-z]{2,}(\.[a-z]{2,})?$/i.test(v)) return 'domain';
+  return 'note';
+}
+
+/* Чипы типов для ручного выбора вида разведки */
+const SEED_CHIPS: Array<[NodeKind, string]> = [
+  ['handle', 'НИК'], ['phone', 'ТЕЛЕФОН'], ['email', 'EMAIL'], ['domain', 'ДОМЕН/IP'],
+];
+
+/* 4 модуля — честные подписи реальных каналов бэкенда */
+const MODULES: Array<{ id: string; label: string; hint: string }> = [
+  { id: 'mtproto', label: 'Telegram MTProto', hint: 'Telethon: поиск аккаунта по номеру/нику' },
+  { id: 'breaches', label: 'Локальные индексы', hint: 'SQLite по ./data/breaches/' },
+  { id: 'dns', label: 'DNS+CRT', hint: 'crt.sh + Cloudflare DoH' },
+  { id: 'image', label: 'Reverse-Image', hint: 'Яндекс.Картинки по URL фото' },
+];
 
 export default function Home({
   onOpenCase, toast,
@@ -26,6 +50,11 @@ export default function Home({
   const confirm = useConfirm();
   const { user: authUser, logout } = useAuth();
   const jwt = !!authUser;
+
+  /* ЭТАП10 коммит10, п.3: состояние workspace-формы QUICK OSINT SEED */
+  const [seedKind, setSeedKind] = useState<NodeKind | 'auto'>('auto');
+  const [seedValue, setSeedValue] = useState('');
+  const [mods, setMods] = useState<Record<string, boolean>>({ mtproto: true, breaches: true, dns: true, image: false });
 
   const refresh = () => loadIndex().then(setMetas);
   useEffect(() => { refresh(); }, []);
@@ -49,6 +78,35 @@ export default function Home({
     setCreating(false);
     setName(''); setSummary(''); setCodename(randomCodename());
     onOpenCase(c);
+  };
+
+  /* ЭТАП10 коммит10, п.3: submit quick-seed = создать дело + целевая нода + открыть доску.
+     Автозапуск spider делает Board через ?spider=<nodeId> (см. PATCH в Board.tsx),
+     чтобы использовать существующий WS и не дублировать логику здесь. */
+  const runSeed = async () => {
+    const raw = seedValue.trim();
+    if (!raw) { toast('Введи ник, телефон, email или домен'); return; }
+    const kind = seedKind === 'auto' ? guessKind(raw) : seedKind;
+    const c = emptyCase(`Разведка: ${raw.slice(0, 40)}`);
+    c.codename = randomCodename();
+    c.status = 'active';
+    c.summary = `Quick OSINT seed · модули: ${MODULES.filter((m) => mods[m.id]).map((m) => m.label).join(', ') || 'базовый enrich'}`;
+    const target = newNode({ kind, title: raw, value: raw, conf: jwt ? 1 : 0, x: -NODE_W / 2, y: -NODE_H / 2 });
+    c.nodes[target.id] = target;
+    if (jwt) {
+      // вторая стартовая карточка-заметка с выбранными модулями -> spider растёт от неё тоже
+      const note = newNode({
+        kind: 'note', title: 'План разведки',
+        notes: MODULES.filter((m) => mods[m.id]).map((m) => `☑ ${m.label}: ${m.hint}`).join('\n') || 'Только базовый enrich.',
+        x: -NODE_W / 2 + 260, y: -NODE_H / 2 + 140, conf: 1,
+      });
+      c.nodes[note.id] = note;
+      const l = newLink({ from: target.id, to: note.id, relation: 'план' });
+      c.links[l.id] = l;
+    }
+    await saveCase(c);
+    setSeedValue('');
+    window.location.assign(`/?case=${encodeURIComponent(c.id)}&spider=${encodeURIComponent(target.id)}`);
   };
 
   const remove = async (m: CaseMeta) => {
@@ -107,7 +165,24 @@ export default function Home({
       </div>
 
       <div className="home">
-        {/* ЭТАП9 коммит8: hero = grid 1fr 320px (оффер + telemetry), наш живой DriftGraphCanvas на всю ширину */}
+        {/* ЭТАП10 коммит10, п.3: есть JWT -> workspace вместо лендинга; нет JWT -> старый лендинг */}
+        {jwt ? (
+          <section className="ws-hero">
+            <div className="ws-hero-line">
+              <h1 className="ws-title">РАБОЧАЯ ЗОНА АГЕНТА</h1>
+              <span className="chip">{authUser.email}</span>
+              <span className="chip ok-chip">CR: {authUser.credits_balance}</span>
+            </div>
+            <aside className="telemetry ws-telemetry" aria-label="телеметрия">
+              <div className="tel-head lbl">SYSTEM TELEMETRY</div>
+              <div className="tel-row"><span>СЕССИЯ</span><b>JWT / ACTIVE</b></div>
+              <div className="tel-row"><span>ХРАНИЛИЩЕ</span><b>LOCAL / IDB</b></div>
+              <div className="tel-row"><span>ЭКСПОРТ</span><b>GRAPHML / JSON</b></div>
+              <div className="tel-foot">ГОРЯЧИЙ СТАРТ: <kbd>N</kbd></div>
+            </aside>
+          </section>
+        ) : (
+        /* ЭТАП9 коммит8: hero = grid 1fr 320px (оффер + telemetry), наш живой DriftGraphCanvas на всю ширину */
         <div className="home-hero-wrap">
         <div className="halftone-layer"><DriftGraphCanvas /></div>
         <section className="hero hero-grid">
@@ -135,7 +210,40 @@ export default function Home({
           </aside>
         </section>
         </div>
+        )}
 
+        {/* ЭТАП10 коммит10, п.3: QUICK OSINT SEED — и в workspace (jwt), и на лендинге */}
+        <section className="seed-panel">
+          <div className="lbl seed-head">БЫСТРЫЙ ЗАПУСК РАЗВЕДКИ // QUICK OSINT SEED</div>
+          <div className="seed-chips">
+            <button type="button" className={`chip${seedKind === 'auto' ? ' on' : ''}`} onClick={() => setSeedKind('auto')}>AUTO</button>
+            {SEED_CHIPS.map(([k, l]) => (
+              <button key={k} type="button" className={`chip${seedKind === k ? ' on' : ''}`} onClick={() => setSeedKind(k)}>{l}</button>
+            ))}
+          </div>
+          <div className="seed-row">
+            <input
+              className="mono seed-input"
+              value={seedValue}
+              placeholder="@username, +79…, email, domain…"
+              onChange={(e) => setSeedValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void runSeed(); }}
+            />
+            <button type="button" className="btn primary" onClick={() => void runSeed()}>ЗАПУСТИТЬ SPIDER{jwt ? ' (1 CR)' : ''}</button>
+          </div>
+          {jwt && (
+            <div className="seed-mods">
+              {MODULES.map((m) => (
+                <label key={m.id} className="mod-check" title={m.hint}>
+                  <input type="checkbox" checked={!!mods[m.id]} onChange={(e) => setMods((s) => ({ ...s, [m.id]: e.target.checked }))} />
+                  <span className="mono">{m.label}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {!jwt && (
         <section>
           <div className="section-title"><h2>Что внутри</h2><span className="rule" /><span className="stamp">только нужное</span></div>
           <div className="feature-grid">
@@ -155,6 +263,7 @@ export default function Home({
             ))}
           </div>
         </section>
+        )}
 
         <section id="cases">
           <div className="section-title">

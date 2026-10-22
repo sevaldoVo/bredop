@@ -45,7 +45,7 @@ interface View { x: number; y: number; k: number }
 type Selection = { type: 'node'; id: string } | { type: 'link'; id: string } | null;
 
 export default function Board({
-  initial, onExit, user, onPaymentRequired, onTopUp, onLogout,
+  initial, onExit, user, onPaymentRequired, onTopUp, onLogout, autoSpider,
 }: {
   initial: InvestigationCase;
   onExit: () => void;
@@ -56,6 +56,8 @@ export default function Board({
   onTopUp?: () => void;
   /** ЭТАП 7: «Выйти» — чистит JWT из localStorage. */
   onLogout?: () => void;
+  /** ЭТАП10 коммит10, п.3: id ноды для автозапуска spider при открытии доски (quick-seed). */
+  autoSpider?: string | null;
 }) {
   const [c, setC] = useState<InvestigationCase>(initial);
   const cRef = useRef(c);
@@ -134,6 +136,13 @@ export default function Board({
     else fitAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* ЭТАП10 коммит10, п.3: автозапуск spider после монтирования (quick-seed из Home). */
+  useEffect(() => {
+    if (!autoSpider) return;
+    const t = window.setTimeout(() => { void runSpiderRef.current?.(autoSpider); }, 400);
+    return () => window.clearTimeout(t);
+  }, [autoSpider]);
 
   const screenToWorld = useCallback((sx: number, sy: number) => {
     const r = boardRef.current!.getBoundingClientRect();
@@ -497,6 +506,10 @@ export default function Board({
     [spiderActive, applyApiResults, showToast],
   );
 
+  /* ref на актуальную runSpider — для автозапуска из useEffect (quick-seed) без циклов зависимостей */
+  const runSpiderRef = useRef<typeof runSpider | null>(null);
+  runSpiderRef.current = runSpider;
+
   /** Shortest path between two cards -> networkx on backend -> red highlight. */
   const handlePathTap = useCallback(
     async (id: string) => {
@@ -736,7 +749,12 @@ export default function Board({
                   )}
                 </div>
                 <div className="title">{n.title}</div>
-                {n.value && <div className="value">{n.value}</div>}
+                {/* ЭТАП10 коммит10, п.1: title === value -> не дублируем строку value, рендерим мета-строку */}
+                {n.value && n.value.trim().toLowerCase() !== n.title.trim().toLowerCase()
+                  ? <div className="value">{n.value}</div>
+                  : n.value
+                    ? <div className="value mono-meta">{KINDS[n.kind].label.toLowerCase()} · {new Date(n.createdAt).toISOString().slice(0, 10)}</div>
+                    : null}
                 <div className="foot">
                   {n.sources.length > 0 && <span className="src-count">SRC:{n.sources.length}</span>}
                   {n.tags.slice(0, 1).map((t) => <span key={t} className="tag">#{t}</span>)}
@@ -814,13 +832,14 @@ export default function Board({
           </div>
         )}
 
-        <div className="zoom-indicator chip">
+        {hint && <div className="hint-banner">{hint}</div>}
+
+        {/* ЭТАП10 коммит10, п.2: zoom-dock ВНУТРИ контейнера холста (absolute), не наезжает на инспектор */}
+        <div className="zoom-dock">
           <button className="btn ghost small" onClick={() => zoomAt(1 / 1.2)}>−</button>
-          <span className="mono" style={{ fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase' }}>{zoomPct}%</span>
+          <span className="mono zoom-val">{zoomPct}%</span>
           <button className="btn ghost small" onClick={() => zoomAt(1.2)}>+</button>
         </div>
-
-        {hint && <div className="hint-banner">{hint}</div>}
 
         {/* inspector */}
         <aside className={`inspector${inspectorOpen && sel ? ' open' : ''}`}>
