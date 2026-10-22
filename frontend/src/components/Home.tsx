@@ -95,12 +95,7 @@ export default function Home({
       <div className="topbar">
         <div className="brand">Вилка<small>v0.1 · локально</small></div>
         <div className="spacer" />
-        <label className="btn small" style={{ cursor: 'pointer' }}>
-          Импорт
-          <input type="file" accept="application/json,.json" hidden
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) doImport(f); e.currentTarget.blur(); }} />
-        </label>
-        <button className="btn small" onClick={doExport}>Экспорт</button>
+        {/* ЭТАП9 коммит7: Импорт/Экспорт убраны из шапки — живут только в tool-rail доски */}
       </div>
 
       <div className="home">

@@ -203,12 +203,14 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 .section-title h2 { font-size: 22px; }
 .section-title .rule { flex: 1; height: 1px; background: var(--hairline-soft); }
 
-.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin-bottom: 48px; }
+.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; grid-auto-rows: 1fr; margin-bottom: 48px; }
 .feature {
   background: var(--term-bg); padding: 20px 18px;
-  transition: background 0.2s;
+  /* ЭТАП9 коммит7: отдельные карточки с рамкой 1px, hover -> accent border */
+  border: 1px solid var(--border);
+  transition: border-color 0.2s;
 }
-.feature:hover { background: var(--term-bg-2); }
+.feature:hover { border-color: var(--green); }
 .feature .num { font-family: var(--font-display); color: var(--vermilion); font-size: 13px; letter-spacing: 0.2em; }
 .feature h3 { font-size: 17px; margin: 8px 0 6px; }
 .feature p { margin: 0; font-size: 13.5px; color: var(--bone-dim); }
@@ -297,7 +299,8 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
     linear-gradient(var(--green), var(--green)) 100% 100% / 10px 1px no-repeat,
     linear-gradient(var(--green), var(--green)) 100% 100% / 1px 10px no-repeat;
 }
-.node.kind-target { border-color: var(--red); }
+.node.kind-target { border-color: var(--border); }
+/* ЭТАП9 коммит7: красный остаётся ТОЛЬКО на угловых засечках target */
 .node.kind-target::before {
   background:
     linear-gradient(var(--red), var(--red)) 0 0 / 14px 1px no-repeat,
@@ -310,7 +313,7 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
     linear-gradient(var(--red), var(--red)) 100% 100% / 1px 14px no-repeat;
 }
 .node:hover { border-color: var(--text-ash); }
-.node.selected { border-color: var(--green); }
+.node.selected { border: 1px solid var(--green); }
 .node.dragging { z-index: 50; }
 .node.linksource { animation: pulse 1s infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 2px rgba(61, 220, 132, 0.35); } }
@@ -532,12 +535,11 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 .auth-wordmark {
   position: fixed; top: 44px; left: 50%; transform: translateX(-50%); z-index: 1;
   display: inline-block; padding: 10px 28px;
-  background: color-mix(in srgb, var(--term-bg) 80%, transparent);
-  border: 1px solid var(--border);
+  /* ЭТАП9 коммит7: чистый логотип — без рамки/фона/тени (скрим .auth-right::before даёт читаемость) */
+  background: none; border: none; text-shadow: none; filter: none;
   font-family: var(--font-display); font-weight: 700;
   font-size: clamp(40px, 8vw, 96px);
-  letter-spacing: 0.08em; color: var(--text);
-  text-shadow: 0 0 28px color-mix(in srgb, var(--green) 55%, transparent);
+  letter-spacing: 0.08em; color: var(--green);
   text-transform: uppercase; pointer-events: none; white-space: nowrap;
 }
 .auth-right {
@@ -553,8 +555,8 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
   pointer-events: none;
 }
 .auth-card {
-  width: min(420px, 92vw); padding: 28px 26px;
-  background: color-mix(in srgb, var(--term-bg-1) 84%, transparent);
+  width: min(440px, 92vw); max-width: 440px; padding: 28px; box-sizing: border-box;
+  background: color-mix(in srgb, var(--term-bg-1) 96%, transparent);
   border: 1px solid var(--border);
   border-radius: 0; box-shadow: none;
   display: flex; flex-direction: column; gap: 12px;
@@ -591,11 +593,13 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 }
 .auth-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
 .auth-title {
-  font-family: var(--font-display); font-weight: 700; font-size: 32px;
+  font-family: var(--font-display); font-weight: 700; font-size: 23px;
   line-height: 1.1; letter-spacing: .02em; color: var(--text);
   text-transform: uppercase;
 }
 .auth-tabs { width: 100%; }
+/* ЭТАП9 коммит7: активный таб ВХОД/РЕГИСТРАЦИЯ НИКОГДА не красный */
+.auth-tabs button.on { background: var(--term-bg-3); color: var(--text); border-bottom: 2px solid var(--green); font-weight: 650; }
 .auth-tabs button { flex: 1; height: 36px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; background: transparent; color: var(--text-dim); cursor: pointer; }
 .auth-demo-link {
   align-self: center; font-family: var(--font-mono); font-size: 11px;
@@ -653,7 +657,7 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 /* Home: hero поверх дрейфующего графа */
 .home-hero-wrap { position: relative; border-bottom: 1px solid var(--border); margin-bottom: 40px; overflow: hidden; }
 .home-hero-wrap .halftone-layer { position: absolute; inset: 0; z-index: 0; background: transparent; }
-.home-hero-wrap .hero { position: relative; z-index: 1; padding-bottom: 34px; margin-bottom: 0; border-bottom: none; }
+.home-hero-wrap .hero { position: relative; z-index: 1; padding-bottom: 34px; margin-bottom: 0; border-bottom: none; max-width: 1200px; margin-left: auto; margin-right: auto; }
 
 /* СИМУЛЯЦИЯ: янтарный контур (по дизайн-спринту), моно-шрифт */
 .sim-badge {
@@ -702,11 +706,12 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 
 /* --- zeroday: чёрно-магента «0-day» --- */
 [data-theme="zeroday"] {
-  --term-bg: #08050c; --term-bg-1: #100b16; --term-bg-2: #170f20; --term-bg-3: #20142c;
-  --border: #2a1f35;
-  --green: #f0f; --green-dim: #b83ab8; --green-dark: #3a103a;
-  --text: #ecdaf5; --text-dim: #a68fb4; --text-ash: #6d5a7c;
-  --amber: #ffd166; --red: #ff2d55; --red-glow: rgba(255, 45, 85, 0.55);
+  /* ЭТАП9 коммит7: Cyber Violet — ровно по спеке */
+  --term-bg: #09070f; --term-bg-1: #110d1b; --term-bg-2: #191328; --term-bg-3: #241c38;
+  --border: #2e2448;
+  --green: #a855f7; --green-dim: #581c87; --green-dark: #2a1145;
+  --text: #f3e8ff; --text-dim: #a78bfa; --text-ash: #6b5b95;
+  --amber: #f59e0b; --red: #f43f5e; --red-glow: rgba(244, 63, 94, 0.55);
 }
 
 /* --- ghost: светлая инверсия для дневной работы --- */
@@ -766,3 +771,6 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 .drift-wrap { position: absolute; inset: 0; overflow: hidden; }
 .drift-canvas { display: block; width: 100%; height: 100%; }
 @media (prefers-reduced-motion: reduce) { .bayer-hud::after { content: " [STATIC]"; } }
+
+/* ЭТАП9 коммит7: чипы топбара — mono 10px uppercase, единая высота 28px */
+.topbar .chip, .topbar .btn.small { height: 28px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }

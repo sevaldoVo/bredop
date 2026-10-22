@@ -14,7 +14,7 @@ const THEME_SWATCH: Record<string, string> = {
   phantom: '#3ddc84',
   axis: '#22d3ee',
   tactical: '#f59e0b',
-  zeroday: '#ef4444',
+  zeroday: '#a855f7',
   ghost: '#9ca3af',
 };
 

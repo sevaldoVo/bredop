@@ -72,7 +72,7 @@ export function DriftGraphCanvas({
           const dist = Math.hypot(a.x - b.x, a.y - b.y);
           if (dist < lineDistance) {
             ctx.strokeStyle = shader;
-            ctx.globalAlpha = (1 - dist / lineDistance) * 0.5;
+            ctx.globalAlpha = (1 - dist / lineDistance) * 0.35; /* ЭТАП9 коммит7: линии тоньше, не перетягивают hero */
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(a.x, a.y);

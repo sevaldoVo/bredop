@@ -73,9 +73,12 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
     let shaderRgb: [number, number, number] = [61, 220, 132];
     let bgRgb: [number, number, number] = [6, 10, 7];
     const parseHex = (hex: string, fb: [number, number, number]): [number, number, number] => {
-      const r = parseInt(hex.slice(1, 3), 16);
-      const g = parseInt(hex.slice(3, 5), 16);
-      const b = parseInt(hex.slice(5, 7), 16);
+      let h = hex.trim();
+      // короткий hex (#f0f -> #ff00ff): иначе slice даёт NaN и zeroday молча фолбэкался в зелёный
+      if (h.length === 4 && h.startsWith('#')) h = '#' + h[1] + h[1] + h[2] + h[2] + h[3] + h[3];
+      const r = parseInt(h.slice(1, 3), 16);
+      const g = parseInt(h.slice(3, 5), 16);
+      const b = parseInt(h.slice(5, 7), 16);
       return Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b) ? [r, g, b] : fb;
     };
     const syncColors = () => {
