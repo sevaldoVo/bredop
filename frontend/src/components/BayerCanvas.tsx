@@ -1,13 +1,15 @@
 /**
- * BayerCanvas — байесовский dithering-шейдер фона ВИЛКИ (ЭТАП 9, коммит 2).
- * Offscreen canvas 160x90, upscale через CSS image-rendering: pixelated.
- * 3 дрейфующих гауссовых блоба + репульсор от курсора + ripple на keydown.
+ * BayerCanvas — байесовский dithering-шейдер фона ВИЛКИ (ЭТАП 9, коммит 5: калибровка).
+ * Offscreen canvas 320x180 (зерно мельче), upscale через CSS image-rendering: pixelated.
+ * Калибровка поля: I = base(0.04) + 0.5*gauss (+ripple*0.6) => целевая доля «горящих»
+ * пикселей 8–15% (раньше ~50% давало шахматное поле).
+ * Цвета читаются каждые ~500ms напрямую из getComputedStyle (без MutationObserver-кеша).
  * Пауза при document.hidden; статика при prefers-reduced-motion.
  */
 import { useEffect, useRef, type ReactElement } from 'react';
 
-const W = 160;
-const H = 90;
+const W = 320;
+const H = 180;
 
 // Матрица Байера 4x4 (по ТЗ), нормализованная /16
 const BAYER: number[][] = [
@@ -63,30 +65,41 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
 
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    // цвета из токенов темы (--green как «--shader», --term-bg как фон)
+    // цвета из токенов темы (--green как «--shader», --term-bg как фон).
+    // КАЛИБРОВКА: читаем каждые ~500ms напрямую из getComputedStyle — без MutationObserver-кеша,
+    // чтобы смена [data-theme] гарантированно попадала в шейдер.
     let shaderColor = '#3ddc84';
     let bgColor = '#060a07';
+    let shaderRgb: [number, number, number] = [61, 220, 132];
+    let bgRgb: [number, number, number] = [6, 10, 7];
+    const parseHex = (hex: string, fb: [number, number, number]): [number, number, number] => {
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      return Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b) ? [r, g, b] : fb;
+    };
     const syncColors = () => {
-      shaderColor = readVar(window, '--green', '#3ddc84');
+      shaderColor = readVar(document.documentElement, '--green', '#3ddc84');
       bgColor = readVar(document.documentElement, '--term-bg', '#060a07');
+      shaderRgb = parseHex(shaderColor, [61, 220, 132]);
+      bgRgb = parseHex(bgColor, [6, 10, 7]);
     };
     syncColors();
-    const themeObserver = new MutationObserver(syncColors);
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+    const colorTimer = window.setInterval(syncColors, 500);
 
     // три блоба: случайные старт-позиции, медленный дрейф, разные сигмы
     const blobs: Blob[] = Array.from({ length: 3 }, (_, i) => ({
       x: W * (0.25 + 0.25 * i),
       y: H * (0.3 + 0.2 * ((i * 2) % 3)),
-      vx: (Math.random() - 0.5) * 0.12,
-      vy: (Math.random() - 0.5) * 0.08,
-      sigma: 26 + i * 10,
+      vx: (Math.random() - 0.5) * 0.24,
+      vy: (Math.random() - 0.5) * 0.16,
+      sigma: 20 + i * 7,
       phase: Math.random() * Math.PI * 2,
     }));
 
     const ripples: Ripple[] = [];
     const mouse = { x: -9999, y: -9999, active: false };
-    const REPEL_R = 80 / (W / 3); // 80 css-px примерно ≈ 24 px offscreen (полотно растянуто)
+    const REPEL_R = 80 / (W / 4); // 80 css-px ≈ 10 px offscreen при 320-wide поле (полотно растянуто на экран)
 
     const onMouseMove = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
@@ -112,17 +125,21 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
     const drawFrame = (timeMs: number) => {
       const scale = propsRef.current.intensityScale;
       const data = img.data;
-
+      // КАЛИБРОВКА ПОЛЯ (ТЗ): I = 0.04 + 0.5*gauss + ripple*0.6.
+      // base 0.04 ниже минимального порога Байера (1/16=0.0625) => фон почти пустой;
+      // амплитуда гаусса 0.5 => горят только ядра блобов ~8-15% пикселей (не шахматка).
       for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
-          // сумма гауссиан трёх блобов
-          let intensity = 0;
+          // сумма гауссиан трёх блобов (амплитуда 0.5 на блоб — пересечения всё равно <=1)
+          let gauss = 0;
           for (const b of blobs) {
             const pulse = 0.75 + 0.25 * Math.sin(timeMs * 0.0006 + b.phase);
             const dx = x - b.x;
             const dy = y - b.y;
-            intensity += pulse * Math.exp(-(dx * dx + dy * dy) / (2 * b.sigma * b.sigma));
+            gauss += 0.35 * pulse * Math.exp(-(dx * dx + dy * dy) / (2 * b.sigma * b.sigma));
           }
+
+          let intensity = 0.04 + gauss;
 
           // репульсор от курсора: гасим поле рядом с мышью
           if (mouse.active) {
@@ -135,14 +152,14 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
             }
           }
 
-          // ripple: бегущее кольцо синуса, затухание ~1.2s
+          // ripple: бегущее кольцо синуса, затухание ~1.2s, вклад не выше 0.6
           for (const r of ripples) {
             const age = (timeMs - r.t0) / 1200;
             if (age >= 0 && age <= 1) {
               const dist = Math.hypot(x - r.x, y - r.y);
               const waveR = age * (W * 0.7);
-              const band = Math.exp(-((dist - waveR) * (dist - waveR)) / 90);
-              intensity += band * (1 - age) * 0.9;
+              const band = Math.exp(-((dist - waveR) * (dist - waveR)) / 320);
+              intensity += band * (1 - age) * 0.6;
             }
           }
 
@@ -153,15 +170,10 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
           const on = intensity > thr;
 
           const p = (y * W + x) * 4;
-          if (on) {
-            data[p] = parseInt(shaderColor.slice(1, 3), 16) || 61;
-            data[p + 1] = parseInt(shaderColor.slice(3, 5), 16) || 220;
-            data[p + 2] = parseInt(shaderColor.slice(5, 7), 16) || 132;
-          } else {
-            data[p] = parseInt(bgColor.slice(1, 3), 16) || 6;
-            data[p + 1] = parseInt(bgColor.slice(3, 5), 16) || 10;
-            data[p + 2] = parseInt(bgColor.slice(5, 7), 16) || 7;
-          }
+          const [cr, cg, cb] = on ? shaderRgb : bgRgb;
+          data[p] = cr;
+          data[p + 1] = cg;
+          data[p + 2] = cb;
           data[p + 3] = 255;
         }
       }
@@ -207,7 +219,7 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
         wrap.removeEventListener('mousemove', onMouseMove);
         wrap.removeEventListener('mouseleave', onMouseLeave);
         window.removeEventListener('keydown', onKeyDown);
-        themeObserver.disconnect();
+        clearInterval(colorTimer);
       };
     }
 
@@ -215,7 +227,7 @@ export function BayerCanvas({ className, intensityScale = 1.0 }: BayerCanvasProp
       wrap.removeEventListener('mousemove', onMouseMove);
       wrap.removeEventListener('mouseleave', onMouseLeave);
       window.removeEventListener('keydown', onKeyDown);
-      themeObserver.disconnect();
+      clearInterval(colorTimer);
     };
   }, []);
 

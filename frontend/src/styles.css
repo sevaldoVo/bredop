@@ -528,17 +528,29 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 }
 .auth-left { position: static; }
 .auth-left .halftone-layer { position: fixed; inset: 0; z-index: 0; }
+/* калибровка читаемости титула: подложка + glow вместо голого текста поверх шейдера */
 .auth-wordmark {
   position: fixed; top: 44px; left: 50%; transform: translateX(-50%); z-index: 1;
+  display: inline-block; padding: 10px 28px;
+  background: color-mix(in srgb, var(--term-bg) 80%, transparent);
+  border: 1px solid var(--border);
   font-family: var(--font-display); font-weight: 700;
   font-size: clamp(40px, 8vw, 96px);
-  letter-spacing: 0.08em; color: var(--green);
+  letter-spacing: 0.08em; color: var(--text);
+  text-shadow: 0 0 28px color-mix(in srgb, var(--green) 55%, transparent);
   text-transform: uppercase; pointer-events: none; white-space: nowrap;
 }
 .auth-right {
   position: relative; z-index: 1;
   display: grid; place-items: center; min-height: 100dvh;
   padding: 24px; background: transparent;
+}
+/* скрим за карточкой: мягкое тёмное пятно, чтобы форма читалась на любом поле шейдера */
+.auth-right::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 55% 45% at 50% 45%,
+    color-mix(in srgb, var(--term-bg) 62%, transparent), transparent 72%);
+  pointer-events: none;
 }
 .auth-card {
   width: min(420px, 92vw); padding: 28px 26px;
