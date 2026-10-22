@@ -88,6 +88,9 @@ export default function Board({
   const [wsState, setWsState] = useState<WsState>('closed');
   const [lastProbe, setLastProbe] = useState<{ engine: 'mock' | 'live'; ms: number }>({ engine: 'mock', ms: 0 });
   const spawnedRef = useRef<Set<string>>(new Set()); // ids created by backend (spawn animation)
+  // КОММИТ 11, п.3: каскад found-событий — очередь с минимальным интервалом CASCADE_MS
+  const CASCADE_MS = 150;
+  const streamRef = useRef<{ last: number; timer: number | null }>({ last: 0, timer: null });
   const toastTimer = useRef<number | null>(null);
 
   const showToast = useCallback((msg: string) => {
@@ -383,10 +386,27 @@ export default function Board({
 
   /* ---------- [PATCH-2b] applying backend results to the board ----------- */
   /** Insert wire-nodes/links into the case + immediate saveCase (PATCH-5). */
+  /** КОММИТ 11, п.1: нормализованный ключ сущности kind:value для entity resolution. */
+  const normalizeKey = (kind: string, value: string): string => `${kind}:${value.toLowerCase().trim()}`;
+
+  /** КОММИТ 11, п.3: каскад found-событий — применяем не быстрее, чем раз в 150ms (граф растёт визуально). */
+  const cascadeGate = useCallback((): Promise<void> => {
+    const st = streamRef.current;
+    const wait = Math.max(0, st.last + CASCADE_MS - Date.now());
+    st.last = Date.now() + wait;
+    if (wait > 0) setWsState('streaming');
+    return wait > 0 ? new Promise((res) => { window.setTimeout(res, wait); }) : Promise.resolve();
+  }, [CASCADE_MS]);
+
   const applyApiResults = useCallback(
     async (freshNodes: ApiFactNode[], freshLinks: ApiFactLink[]) => {
       const cur = cRef.current;
-      const known = new Set(Object.values(cur.nodes).map((n) => `${n.kind}|${(n.value ?? n.title).toLowerCase()}`));
+      // КОММИТ 11, п.1: карта нормализованных ключей -> id существующих нод (без дублей на доске)
+      const byKey = new Map<string, string>();
+      for (const n of Object.values(cur.nodes)) {
+        if (n.mergedInto) continue;                    // каноническая нода — это не она
+        byKey.set(normalizeKey(n.kind, n.value ?? n.title), n.id);
+      }
       let cx = 0, cy = 0, cnt = 0;
       for (const l of freshLinks) {
         const a = cur.nodes[l.from], b = cur.nodes[l.to];
@@ -395,11 +415,22 @@ export default function Board({
       const center = cnt ? { x: cx / cnt, y: cy / cnt } : { x: 0, y: 0 };
 
       const addedNodes: FactNode[] = [];
+      const mergedNodes: FactNode[] = [];              // дубли, ставшие alias'ами
+      const retarget = new Map<string, string>();      // raw id -> канонический id на доске
       freshNodes.forEach((raw, i) => {
-        if (cur.nodes[raw.id]) return;                 // already on board
-        const key = `${raw.kind}|${(raw.value ?? '').toLowerCase()}`;
-        if (known.has(key)) return;                    // dedup by kind+value
-        known.add(key);
+        if (cur.nodes[raw.id]) { retarget.set(raw.id, raw.id); return; } // уже на доске
+        const key = normalizeKey(raw.kind, raw.value ?? '');
+        const canonId = key ? byKey.get(key) : undefined;
+        if (canonId) {
+          // КОММИТ 11, п.1: дубль НЕ создаём; притягиваем нить к существующей ноде, помечаем ПЕРЕСЕЧЕНИЕ
+          retarget.set(raw.id, canonId);
+          const canon = cur.nodes[canonId];
+          if (canon && !canon.intersection) {
+            mergedNodes.push({ ...canon, intersection: true, updatedAt: Date.now() });
+          }
+          return;
+        }
+        if (raw.id) byKey.set(key, raw.id);            // будущая нода займёт ключ
         const n = apiNodeToFactNode(raw);
         if (!raw.x && !raw.y) {
           const angle = (2 * Math.PI * i) / Math.max(freshNodes.length, 1) - Math.PI / 2;
@@ -409,19 +440,30 @@ export default function Board({
         spawnedRef.current.add(n.id);                  // CSS spawn animation
         addedNodes.push(n);
       });
-      const validIds = new Set([...Object.keys(cur.nodes), ...addedNodes.map((n) => n.id)]);
+      const resolve = (id: string) => retarget.get(id) ?? id;
+      const validIds = new Set([
+        ...Object.keys(cur.nodes),
+        ...addedNodes.map((n) => n.id),
+        ...mergedNodes.map((n) => n.id),
+      ]);
       const addedLinks: FactLink[] = freshLinks
-        .filter((l) => validIds.has(l.from) && validIds.has(l.to) && !cur.links[l.id])
+        .map((l) => ({ ...l, from: resolve(l.from), to: resolve(l.to) }))
+        .filter((l) => validIds.has(l.from) && validIds.has(l.to) && l.from !== l.to && !cur.links[l.id])
         .map(apiLinkToFactLink);
 
-      if (!addedNodes.length && !addedLinks.length) return false;
+      if (!addedNodes.length && !addedLinks.length && !mergedNodes.length) return false;
       setC((prev) => {
         const nodes = { ...prev.nodes };
         for (const n of addedNodes) nodes[n.id] = n;
+        for (const n of mergedNodes) nodes[n.id] = n;  // чип ПЕРЕСЕЧЕНИЕ на канонической ноде
         const links = { ...prev.links };
         for (const l of addedLinks) links[l.id] = l;
         return { ...prev, nodes, links, updatedAt: Date.now() };
       });
+      // КОММИТ 11, п.2: пересечение двух источников на одной ноде — тост
+      for (const n of mergedNodes) {
+        showToast(`ПЕРЕСЕЧЕНИЕ: ${n.title} — данные из второго источника`);
+      }
       // [PATCH-5] persist to IndexedDB right away so F5 does not eat the probe
       const next: InvestigationCase = {
         ...cRef.current,
@@ -429,6 +471,7 @@ export default function Board({
         links: { ...cRef.current.links },
       };
       for (const n of addedNodes) next.nodes[n.id] = n;
+      for (const n of mergedNodes) next.nodes[n.id] = n;
       for (const l of addedLinks) next.links[l.id] = l;
       try { await saveCase({ ...next, view: viewRef.current }); } catch { /* noop */ }
       return true;
@@ -484,12 +527,14 @@ export default function Board({
         await spiderRun(graph, startNodeId, depth, async (ev: SpiderEvent) => {
           if (ev.status === 'spider_started' || ev.status === 'enriching') setWsState('open');
           if (ev.status === 'found' && (ev.node || ev.link)) {
+            await cascadeGate();                       // КОММИТ 11, п.3: визуальный каскад 150ms
             const nodes = ev.node ? [stampEngine(ev.node, lastEngine)] : [];
             const links = ev.link ? [ev.link] : [];
             if (await applyApiResults(nodes, links)) found++;
           } else if (ev.status === 'enriching' && ev.value) {
             setHint(`Спайдер [${ev.depth}]: ${ev.value}`);
           } else if (ev.status === 'done' || ev.status === 'spider_done') {
+            setWsState((ws) => (ws === 'streaming' ? 'open' : ws)); // КОММИТ 11: конец каскада
             if (ev.engine) { lastEngine = ev.engine; setLastProbe((p) => ({ ...p, engine: ev.engine as 'mock' | 'live' })); }
           }
         });
@@ -738,7 +783,7 @@ export default function Board({
               <div
                 key={n.id}
                 data-id={n.id}
-                className={`node kind-${n.kind}${sel?.type === 'node' && sel.id === n.id ? ' selected' : ''}${linkFrom === n.id ? ' linksource' : ''}${spawnedRef.current.delete(n.id) ? ' node-spawn' : ''}${enrichingId === n.id ? ' enriching' : ''}${pathIds.nodes.includes(n.id) ? ' on-path' : ''}`}
+                className={`node kind-${n.kind}${sel?.type === 'node' && sel.id === n.id ? ' selected' : ''}${n.intersection ? ' intersected' : ''}${linkFrom === n.id ? ' linksource' : ''}${spawnedRef.current.delete(n.id) ? ' node-spawn' : ''}${enrichingId === n.id ? ' enriching' : ''}${pathIds.nodes.includes(n.id) ? ' on-path' : ''}`}
                 style={{ left: n.x, top: n.y }}
               >
                 <div className="head">
@@ -746,6 +791,10 @@ export default function Board({
                   <span className="kind">{KINDS[n.kind].short}</span>
                   {n.engine === 'mock' && (
                     <span className="sim-badge" title="Данные сгенерированы мок-генератором, а не реальным источником">СИМУЛЯЦИЯ</span>
+                  )}
+                  {/* КОММИТ 11, п.1-2: пересечение двух источников на одной сущности */}
+                  {n.intersection && (
+                    <span className="int-badge" title="На эту сущность указывают данные из двух и более источников">ПЕРЕСЕЧЕНИЕ</span>
                   )}
                 </div>
                 <div className="title">{n.title}</div>
@@ -877,7 +926,7 @@ export default function Board({
 
       {/* ЭТАП 9 коммит 4: статус-бар — WS/engine/latency/credits/theme */}
       <div className="board-status">
-        <span>WS: {wsState === 'open' ? <b>CONNECTED</b> : wsState === 'connecting' ? 'CONNECTING' : 'IDLE'} <span className={`dot${wsState === 'open' ? '' : ' off'}`}>●</span></span>
+        <span>WS: {wsState === 'open' ? <b>CONNECTED</b> : wsState === 'streaming' ? <b className="amber">STREAMING</b> : wsState === 'connecting' ? 'CONNECTING' : 'IDLE'} <span className={`dot${wsState === 'open' ? '' : wsState === 'streaming' ? ' amber-dot' : ' off'}`}>●</span></span>
         <span>ENGINE: <b>{lastProbe.engine.toUpperCase()}</b></span>
         <span>LAST: <b>{lastProbe.ms || '—'}ms</b></span>
         <span>CR: <b>{user ? user.credits_balance : '—'}</b></span>

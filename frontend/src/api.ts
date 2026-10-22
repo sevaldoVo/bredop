@@ -396,7 +396,7 @@ const WS_BASE: string = (() => {
  * 'error' или закрытии сокета до завершения.
  */
 /** Состояние сокета для статус-бара доски: 'open' | 'connecting' | 'closed'. */
-export type WsState = 'open' | 'connecting' | 'closed';
+export type WsState = 'open' | 'connecting' | 'closed' | 'streaming';
 
 export function enrichNodeStream(
   node: FactNode,

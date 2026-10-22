@@ -78,6 +78,10 @@ export interface FactNode {
   pinned?: boolean;
   /** ЭТАП 7: движок, выдавший факт (mock = симуляция, live = реальный источник). */
   engine?: 'mock' | 'live';
+  /** КОММИТ 11: entity resolution — id ноды, к которой притянут дубль (каноническая остаётся на доске). */
+  mergedInto?: string;
+  /** КОММИТ 11: на ноду пришли данные из >=2 разных источников — янтарный чип «ПЕРЕСЕЧЕНИЕ». */
+  intersection?: boolean;
 }
 
 /** Тип связи, зеркаляет backend/models.py LinkKind (ЭТАП 1+). */

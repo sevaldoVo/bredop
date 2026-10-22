@@ -677,6 +677,17 @@ label { display: block; font-size: 11px; letter-spacing: 0.14em; text-transform:
 .home-hero-wrap .hero { position: relative; z-index: 1; padding-bottom: 34px; margin-bottom: 0; border-bottom: none; max-width: 1200px; margin-left: auto; margin-right: auto; }
 
 /* СИМУЛЯЦИЯ: янтарный контур (по дизайн-спринту), моно-шрифт */
+/* КОММИТ 11, п.2: янтарный чип ПЕРЕСЕЧЕНИЕ + янтарная рамка ноды с двумя источниками */
+.int-badge {
+  font: var(--font-mono) 9px/1; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--amber); border: 1px solid var(--amber); background: transparent;
+  padding: 2px 5px; border-radius: 0;
+}
+.node.intersected { border-color: var(--amber); }
+.amber { color: var(--amber); }
+.dot.amber-dot { color: var(--amber); animation: pulse-dot 1s infinite; }
+@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.35} }
+
 .sim-badge {
   margin-left: auto; font-family: var(--font-mono);
   font-size: 9px; font-weight: 800; letter-spacing: .08em;
